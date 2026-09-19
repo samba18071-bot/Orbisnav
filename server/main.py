@@ -25,6 +25,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from ultralytics import YOLO
 
@@ -310,6 +311,33 @@ def analyze_frame(img: np.ndarray, frame_id: int) -> List[Dict[str, Any]]:
         })
 
     return detections
+
+@app.get("/")
+async def root_portal():
+    apk_path = "OrbisNav-release.apk"
+    apk_exists = os.path.exists(apk_path)
+    apk_size_mb = round(os.path.getsize(apk_path) / (1024 * 1024), 1) if apk_exists else 0
+    return {
+        "service": "OrbisNav Universal Vision & Autonomous Navigation Server",
+        "status": "online",
+        "model": active_model_name,
+        "classes_active": len(yolo_model.names),
+        "apk_download_url": "/download-apk",
+        "apk_size_mb": apk_size_mb
+    }
+
+@app.get("/download-apk")
+async def download_apk():
+    apk_path = "OrbisNav-release.apk"
+    if not os.path.exists(apk_path):
+        apk_path = "build/app/outputs/flutter-apk/app-release.apk"
+    if os.path.exists(apk_path):
+        return FileResponse(
+            path=apk_path,
+            filename="OrbisNav-release.apk",
+            media_type="application/vnd.android.package-archive"
+        )
+    return {"error": "APK not found"}
 
 @app.get("/health")
 async def health_check():
