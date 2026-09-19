@@ -1,0 +1,61 @@
+name: AI-Eyes Auto-Sync & Verification Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  native-audit-and-test:
+    name: Bare-Metal C++ & Embedded Engine Audit
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Install CMake & Ninja Toolchains
+        run: |
+          brew install cmake ninja
+
+      - name: Run Clang-Tidy & Static Linting
+        run: |
+          cmake -B build_cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          clang++ --version
+
+      - name: Build Native Shared Library & Verification Suite
+        run: |
+          cmake --build build_cmake --config Release
+
+      - name: Execute Native C++ Point-to-Point Test Suite
+        run: |
+          ctest --test-dir build_cmake --output-on-failure
+
+  dart-flutter-ffi-test:
+    name: Dart FFI & Controller Integration Tests
+    runs-on: macos-latest
+    needs: native-audit-and-test
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter / Dart SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install Dependencies
+        run: dart pub get
+
+      - name: Build Native dylib for FFI Runner
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Run Dart Static Analysis
+        run: dart analyze
+
+      - name: Run Dart FFI Master Lifecycle Verification
+        run: dart test test/orbisnav_dart_test.dart

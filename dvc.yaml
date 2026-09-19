@@ -1,0 +1,19 @@
+params:
+- dvclive/params.yaml
+metrics:
+- dvclive/metrics.json
+plots:
+- dvclive/plots/metrics:
+    x: step
+- dvclive/plots/images
+- dvclive/plots/sklearn/cf.json:
+    template: confusion_normalized
+    x: actual
+    y: predicted
+    title: Confusion Matrix
+    x_label: True Label
+    y_label: Predicted Label
+artifacts:
+  best:
+    path: dvclive/artifacts/best.pt
+    type: model
