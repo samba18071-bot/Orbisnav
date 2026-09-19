@@ -1,13 +1,34 @@
 version: '3.8'
 
 services:
-  orbisnav-vision:
-    build: .
+  orbisnav-vision-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: orbisnav-vision-server
     restart: always
     ports:
       - "8000:8000"
     environment:
       - PORT=8000
-    volumes:
-      - ./weights:/app/weights
+      - HOST=0.0.0.0
+      - ORBISNAV_API_KEY=${ORBISNAV_API_KEY:-orbisnav-live-key-2026}
+      - LOG_LEVEL=info
+      - UVICORN_LOOP=uvloop
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G

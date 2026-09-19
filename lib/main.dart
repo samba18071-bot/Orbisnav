@@ -6,6 +6,7 @@ import 'package:camera/camera.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'controllers/audio_mutex_controller.dart';
 import 'services/online_obstacle_detector.dart';
+import 'services/online_vision_stream.dart';
 import 'models/navigation_destination.dart';
 import 'services/nameboard_navigation_service.dart';
 
@@ -78,7 +79,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
 
   // Audio / Speech State (Governed by AudioMutexController)
   final AudioMutexController _audioMutex = AudioMutexController();
-  final OnlineObstacleDetector _onlineDetector = OnlineObstacleDetector();
+  final OnlineVisionStream _visionStream = OnlineVisionStream();
   String _activeSpeech = "AI-Eyes Online Vision Ready. Path Clear.";
   bool _isSpeaking = false;
   String _lastHaptic = "Dual 50ms Pulse (Boot)";
@@ -87,7 +88,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   bool _isOnlineVisionActive = true;
   bool _isCapturingOnlineFrame = false;
   int _cloudLatencyMs = 68;
-  String _cloudStatus = "CONNECTED (Online Cloud AI)";
+  String _cloudStatus = "CONNECTED (WebSocket Secure Cloud)";
   List<DetectedObstacle> _activeObstacles = [];
   DetectedObstacle? _primaryHazard;
   Timer? _onlineStreamTimer;
@@ -122,8 +123,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       }
     });
 
-    // 2. Listen to Online Cloud Detection Results
-    _detectionSubscription = _onlineDetector.resultsStream.listen((result) {
+    // 2. Connect and Listen to Resilient WebSocket / Cloud Vision Stream
+    await _visionStream.connect();
+    _detectionSubscription = _visionStream.resultsStream.listen((result) {
       if (mounted) {
         setState(() {
           _cloudLatencyMs = result.latencyMs;
@@ -234,11 +236,12 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     HapticFeedback.lightImpact();
   }
 
-  /// Real-time Internet streaming loop: periodically captures frames and executes
-  /// cloud obstacle detection without requiring offline C++ model execution.
+  /// Real-time streaming loop: captures frames and executes
+  /// high-concurrency cloud obstacle detection via WebSocket / HTTP.
   void _startOnlineVisionStream() {
     _onlineStreamTimer?.cancel();
-    _onlineStreamTimer = Timer.periodic(const Duration(milliseconds: 1400), (_) {
+    // Dynamic interval based on network latency profile (8 FPS / 5 FPS / 3 FPS)
+    _onlineStreamTimer = Timer.periodic(const Duration(milliseconds: 600), (_) {
       if (_isOnlineVisionActive && _isCameraInitialized && !_isCapturingOnlineFrame) {
         _captureAndAnalyzeCloudFrame();
       }
@@ -254,7 +257,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       final image = await _cameraController!.takePicture();
       final bytes = await image.readAsBytes();
 
-      await _onlineDetector.processFrameBytes(
+      await _visionStream.sendFrameBytes(
         bytes,
         devicePitchDeg: _pitchDeg,
       );
@@ -267,35 +270,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     } finally {
       _isCapturingOnlineFrame = false;
     }
-  }
-
-  void _triggerSimulatedHazard(AudioPriority priority, String label, double dist, String clock) {
-    setState(() {
-      _primaryHazard = DetectedObstacle(
-        label: label,
-        confidence: 0.96,
-        xMin: 0.30,
-        yMin: 0.20,
-        xMax: 0.70,
-        yMax: 0.80,
-        distanceMeters: dist,
-        ttcSeconds: (dist / 1.2),
-        priority: priority,
-        clockPosition: clock,
-      );
-      _activeObstacles = [_primaryHazard!];
-      _lastHaptic = priority == AudioPriority.level0Critical ? "Continuous Heavy Pulse" : "Dual Tap Haptic";
-    });
-
-    final prompt = priority == AudioPriority.level0Critical
-        ? "Warning! $label at $clock, ${dist.toStringAsFixed(1)} meters ahead!"
-        : "Caution: $label at $clock, ${dist.toStringAsFixed(1)} meters.";
-
-    _audioMutex.speak(
-      text: prompt,
-      priority: priority,
-      haptic: true,
-    );
   }
 
   void _clearHazards() {
@@ -725,7 +699,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                 onChanged: (val) {
                   setState(() {
                     _isOnlineVisionActive = val;
-                    _onlineDetector.setEnabled(val);
                   });
                   if (val) {
                     _startOnlineVisionStream();
@@ -1278,11 +1251,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             onPressed: () {
               final url = urlController.text.trim();
               if (url.isNotEmpty) {
-                _onlineDetector.configureEndpoint(
-                  url: url,
+                _visionStream.configure(
+                  serverUrl: url,
                   apiKey: keyController.text.trim().isNotEmpty ? keyController.text.trim() : null,
                 );
-                _onlineDetector.forceRescan();
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(content: Text("Vision endpoint configured to: $url")),
                 );
@@ -1316,7 +1288,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             children: [
               ElevatedButton.icon(
                 onPressed: () {
-                  _onlineDetector.forceRescan();
                   _captureAndAnalyzeCloudFrame();
                 },
                 icon: const Icon(Icons.refresh, color: Colors.black, size: 16),

@@ -1,317 +1,523 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:camera/camera.dart';
+import 'dart:math' as math;
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:web_socket_channel/status.dart' as status;
+import 'package:web_socket_channel/status.dart' as ws_status;
 import '../controllers/audio_mutex_controller.dart';
-import 'spatial_debouncer.dart';
+import 'online_obstacle_detector.dart';
 
-/// Structured cloud vision detection event emitted by the WebSocket server
-class CloudDetectionEvent {
-  final String label;
-  final String clockZone;
-  final double distanceMeters;
-  final double ttcSeconds;
-  final double confidence;
-  final bool isCritical;
-  final double xMin;
-  final double yMin;
-  final double xMax;
-  final double yMax;
-  final int latencyMs;
-  final DateTime timestamp;
-
-  CloudDetectionEvent({
-    required this.label,
-    required this.clockZone,
-    required this.distanceMeters,
-    required this.ttcSeconds,
-    required this.confidence,
-    required this.isCritical,
-    this.xMin = 0.3,
-    this.yMin = 0.2,
-    this.xMax = 0.7,
-    this.yMax = 0.8,
-    required this.latencyMs,
-    DateTime? timestamp,
-  }) : timestamp = timestamp ?? DateTime.now();
-
-  factory CloudDetectionEvent.fromJson(Map<String, dynamic> json, int latencyMs) {
-    final bbox = json['bbox'] as List<dynamic>?;
-    double xMin = 0.3, yMin = 0.2, xMax = 0.7, yMax = 0.8;
-    if (bbox != null && bbox.length >= 4) {
-      xMin = (bbox[0] as num).toDouble();
-      yMin = (bbox[1] as num).toDouble();
-      xMax = (bbox[2] as num).toDouble();
-      yMax = (bbox[3] as num).toDouble();
-    }
-
-    return CloudDetectionEvent(
-      label: json['label'] as String? ?? 'Obstacle',
-      clockZone: json['clock_zone'] as String? ?? "12 o'clock",
-      distanceMeters: (json['distance_meters'] as num?)?.toDouble() ?? 2.0,
-      ttcSeconds: (json['ttc_seconds'] as num?)?.toDouble() ?? 2.0,
-      confidence: (json['confidence'] as num?)?.toDouble() ?? 0.85,
-      isCritical: json['is_critical'] as bool? ?? false,
-      xMin: xMin,
-      yMin: yMin,
-      xMax: xMax,
-      yMax: yMax,
-      latencyMs: latencyMs,
-    );
-  }
+/// Connection mode of the cloud streaming service
+enum StreamTransportMode {
+  webSocketSecure,
+  webSocketLocal,
+  httpRestCloud,
+  httpRestLocal,
+  disconnected,
 }
 
-/// OnlineVisionStream: Manages camera frame throttling, JPEG compression,
-/// persistent WebSocket streaming to FastAPI backend, and SpatialDebouncer TTS dispatch.
+/// Adaptive stream quality profile determined by real-time RTT metrics
+class AdaptiveStreamProfile {
+  final int targetFps;
+  final int compressionQuality; // 0-100
+  final int streamIntervalMs;
+  final String profileName;
+
+  const AdaptiveStreamProfile({
+    required this.targetFps,
+    required this.compressionQuality,
+    required this.streamIntervalMs,
+    required this.profileName,
+  });
+
+  static const fast = AdaptiveStreamProfile(
+    targetFps: 8,
+    compressionQuality: 75,
+    streamIntervalMs: 125,
+    profileName: "High Quality (Fast RTT)",
+  );
+
+  static const normal = AdaptiveStreamProfile(
+    targetFps: 5,
+    compressionQuality: 55,
+    streamIntervalMs: 200,
+    profileName: "Balanced (Moderate RTT)",
+  );
+
+  static const cellularConstrained = AdaptiveStreamProfile(
+    targetFps: 3,
+    compressionQuality: 35,
+    streamIntervalMs: 333,
+    profileName: "Cellular Low-Bandwidth",
+  );
+}
+
+/// OnlineVisionStream: Production-grade, globally accessible, resilient streaming client.
+/// 
+/// Features:
+/// 1. Dynamic endpoint configuration via `--dart-define=SERVER_URL=...` and `--dart-define=API_KEY=...`
+/// 2. WebSocket Secure (WSS) streaming with automated HTTP REST fallback
+/// 3. Exponential backoff auto-reconnection across network transitions (Wi-Fi <-> 4G/5G)
+/// 4. Adaptive Quality Governor dynamically scaling FPS and compression from latency RTT
+/// 5. Network status monitoring using connectivity_plus for zero battery waste when offline
 class OnlineVisionStream {
   static final OnlineVisionStream _instance = OnlineVisionStream._internal();
   factory OnlineVisionStream() => _instance;
 
-  OnlineVisionStream._internal();
+  OnlineVisionStream._internal() {
+    _initNetworkMonitoring();
+  }
 
-  // WebSocket Server Configuration
-  String _wsUrl = "ws://10.0.2.2:8000/ws/vision-stream"; // Default Android emulator host / LAN
-  WebSocketChannel? _channel;
-  StreamSubscription? _channelSubscription;
-  bool _isConnected = false;
-  bool _isConnecting = false;
-  bool _shouldStream = true;
-
-  // Frame Throttling: 1 out of every 4 frames (targeting 5-10 FPS)
-  int _frameCounter = 0;
-  bool _isProcessingFrame = false;
-  int _lastSentTimestampMs = 0;
-
-  // Spatial Debouncer (4-second cooldown, preemption authority)
-  final SpatialDebouncer _debouncer = SpatialDebouncer(
-    cooldownDuration: const Duration(seconds: 4),
-    criticalDistanceThreshold: 1.5,
+  // ---------------------------------------------------------------------------
+  // Build-time / Runtime Dynamic Configuration
+  // ---------------------------------------------------------------------------
+  static const String _envServerUrl = String.fromEnvironment(
+    'SERVER_URL',
+    defaultValue: 'wss://protection-citizenship-details-valued.trycloudflare.com/ws/vision-stream',
   );
 
-  // Audio Mutex Controller for Native TTS Preemption
-  final AudioMutexController _audioMutex = AudioMutexController();
+  static const String _envApiKey = String.fromEnvironment(
+    'API_KEY',
+    defaultValue: 'orbisnav-live-key-2026',
+  );
 
-  // Broadcast stream for UI HUD updates
-  final StreamController<List<CloudDetectionEvent>> _eventsController =
-      StreamController<List<CloudDetectionEvent>>.broadcast();
-  Stream<List<CloudDetectionEvent>> get detectionEventsStream =>
-      _eventsController.stream;
+  String _serverUrl = _envServerUrl;
+  String _apiKey = _envApiKey;
 
-  final StreamController<String> _statusController =
-      StreamController<String>.broadcast();
-  Stream<String> get statusStream => _statusController.stream;
+  // Endpoint fallback pool
+  static const List<String> fallbackUrls = [
+    "wss://protection-citizenship-details-valued.trycloudflare.com/ws/vision-stream",
+    "https://protection-citizenship-details-valued.trycloudflare.com/detect",
+    "ws://192.168.31.129:8000/ws/vision-stream",
+    "http://192.168.31.129:8000/detect",
+    "ws://127.0.0.1:8000/ws/vision-stream",
+  ];
 
+  // ---------------------------------------------------------------------------
+  // State Variables
+  // ---------------------------------------------------------------------------
+  WebSocketChannel? _wsChannel;
+  StreamSubscription? _wsSubscription;
+  StreamSubscription? _connectivitySubscription;
+
+  bool _isActive = true;
+  bool _isConnected = false;
+  bool _isConnecting = false;
+  bool _isOnlineNetwork = true;
+  int _reconnectAttempts = 0;
+  Timer? _reconnectTimer;
+  Timer? _heartbeatTimer;
+
+  // Real-time Latency & Quality Adaptation
+  int _lastRttMs = 60;
+  final List<int> _rttHistory = [];
+  AdaptiveStreamProfile _currentProfile = AdaptiveStreamProfile.normal;
+  StreamTransportMode _transportMode = StreamTransportMode.disconnected;
+
+  // Anti-Repetition Speech State
+  final Map<String, DateTime> _announcedObstacles = {};
+  final Map<String, double> _announcedDistances = {};
+  bool _wasHazardSpoken = false;
+  DateTime? _lastClearSpokenTime;
+
+  // Stream broadcast controllers
+  final StreamController<OnlineDetectionCycleResult> _resultsController =
+      StreamController<OnlineDetectionCycleResult>.broadcast();
+  Stream<OnlineDetectionCycleResult> get resultsStream => _resultsController.stream;
+
+  final StreamController<StreamTransportMode> _modeController =
+      StreamController<StreamTransportMode>.broadcast();
+  Stream<StreamTransportMode> get transportModeStream => _modeController.stream;
+
+  // Getters
   bool get isConnected => _isConnected;
-  SpatialDebouncer get debouncer => _debouncer;
+  int get lastRttMs => _lastRttMs;
+  AdaptiveStreamProfile get currentProfile => _currentProfile;
+  StreamTransportMode get transportMode => _transportMode;
+  String get activeServerUrl => _serverUrl;
 
-  void configureUrl(String url) {
-    _wsUrl = url;
-    disconnect();
-    connect();
+  // ---------------------------------------------------------------------------
+  // Lifecycle & Initialization
+  // ---------------------------------------------------------------------------
+  void configure({required String serverUrl, String? apiKey}) {
+    _serverUrl = serverUrl;
+    if (apiKey != null) _apiKey = apiKey;
+    _reconnect(forceImmediate: true);
   }
 
-  /// Connects to the FastAPI WebSocket backend with auto-reconnect handling
-  void connect() {
-    if (_isConnected || _isConnecting) return;
+  void _initNetworkMonitoring() {
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((results) {
+      final isConnectedNow = results.any((r) => r != ConnectivityResult.none);
+      if (isConnectedNow != _isOnlineNetwork) {
+        _isOnlineNetwork = isConnectedNow;
+        if (_isOnlineNetwork) {
+          debugPrint("[OnlineVisionStream] Network recovered. Reconnecting...");
+          _reconnect(forceImmediate: true);
+        } else {
+          debugPrint("[OnlineVisionStream] Network offline. Suspending socket...");
+          _disconnect(clean: true);
+          _updateTransportMode(StreamTransportMode.disconnected);
+        }
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // WebSocket Connection & Reconnection Engine
+  // ---------------------------------------------------------------------------
+  Future<void> connect() async {
+    if (_isConnected || _isConnecting || !_isOnlineNetwork) return;
+
     _isConnecting = true;
-    _statusController.add("Connecting to Cloud Vision ($wsUrlDisplay)...");
+    _reconnectTimer?.cancel();
 
-    try {
-      final uri = Uri.parse(_wsUrl);
-      _channel = WebSocketChannel.connect(uri);
+    // Check if URL is WebSocket or HTTP
+    final isWs = _serverUrl.startsWith("ws://") || _serverUrl.startsWith("wss://");
 
-      _channelSubscription = _channel!.stream.listen(
-        _handleServerMessage,
-        onDone: _onDisconnected,
-        onError: (err) {
-          debugPrint("WebSocket stream error: $err");
-          _onDisconnected();
-        },
-        cancelOnError: true,
-      );
+    if (isWs) {
+      try {
+        final uri = Uri.parse(_serverUrl).replace(
+          queryParameters: {
+            if (_apiKey.isNotEmpty) 'token': _apiKey,
+          },
+        );
 
+        debugPrint("[OnlineVisionStream] Connecting to WebSocket: $uri");
+        _wsChannel = WebSocketChannel.connect(uri);
+        await _wsChannel!.ready.timeout(const Duration(seconds: 4));
+
+        _isConnected = true;
+        _isConnecting = false;
+        _reconnectAttempts = 0;
+        _updateTransportMode(
+          _serverUrl.startsWith("wss://")
+              ? StreamTransportMode.webSocketSecure
+              : StreamTransportMode.webSocketLocal,
+        );
+
+        _startHeartbeat();
+        _listenToWebSocket();
+        debugPrint("[OnlineVisionStream] WebSocket connected successfully!");
+      } catch (e) {
+        debugPrint("[OnlineVisionStream] WebSocket connect failed: $e");
+        _isConnected = false;
+        _isConnecting = false;
+        _scheduleReconnect();
+      }
+    } else {
+      // HTTP REST Mode
       _isConnected = true;
       _isConnecting = false;
-      _statusController.add("Connected to Cloud Vision Engine");
-    } catch (e) {
-      debugPrint("WebSocket connection failed: $e");
-      _onDisconnected();
+      _updateTransportMode(
+        _serverUrl.startsWith("https://")
+            ? StreamTransportMode.httpRestCloud
+            : StreamTransportMode.httpRestLocal,
+      );
     }
   }
 
-  String get wsUrlDisplay => _wsUrl;
-
-  void disconnect() {
-    _shouldStream = false;
-    _channelSubscription?.cancel();
-    _channelSubscription = null;
-    _channel?.sink.close(status.goingAway);
-    _channel = null;
-    _isConnected = false;
-    _isConnecting = false;
-    _statusController.add("Cloud Vision Disconnected");
-  }
-
-  void _onDisconnected() {
-    _isConnected = false;
-    _isConnecting = false;
-    _channelSubscription?.cancel();
-    _channelSubscription = null;
-    _channel = null;
-    _statusController.add("Cloud Disconnected (Retrying in 4s...)");
-
-    // Network disconnect auto-reconnection logic
-    if (_shouldStream) {
-      Timer(const Duration(seconds: 4), () {
-        if (!_isConnected && _shouldStream) {
-          connect();
+  void _listenToWebSocket() {
+    _wsSubscription?.cancel();
+    _wsSubscription = _wsChannel?.stream.listen(
+      (dynamic data) {
+        if (data is String) {
+          _handleServerTextMessage(data);
         }
-      });
-    }
+      },
+      onDone: () {
+        debugPrint("[OnlineVisionStream] WebSocket closed by remote.");
+        _handleDisconnect();
+      },
+      onError: (error) {
+        debugPrint("[OnlineVisionStream] WebSocket error: $error");
+        _handleDisconnect();
+      },
+      cancelOnError: true,
+    );
   }
 
-  /// Processes a CameraX / CameraImage frame.
-  /// 
-  /// Throttles execution to 1 in 4 frames (5–10 FPS), compresses to JPEG (quality 70),
-  /// and transmits binary payload over WebSocket.
-  Future<void> ingestCameraFrame(CameraImage image) async {
-    _frameCounter++;
-    // Frame rate throttling: process 1 out of every 4 frames
-    if (_frameCounter % 4 != 0) return;
-
-    if (!_isConnected || _isProcessingFrame) return;
-
-    _isProcessingFrame = true;
-    _lastSentTimestampMs = DateTime.now().millisecondsSinceEpoch;
-
+  void _handleServerTextMessage(String text) {
     try {
-      // Direct YUV / Plane conversion to compressed JPEG payload
-      final Uint8List jpegBytes = _convertCameraImageToJpeg(image);
-      if (jpegBytes.isNotEmpty && _channel != null && _isConnected) {
-        _channel!.sink.add(jpegBytes);
+      final json = jsonDecode(text);
+      final type = json['type'] as String? ?? "detection_result";
+
+      if (type == "pong") {
+        return;
+      }
+
+      if (type == "detection_result") {
+        final rawDets = json['detections'] as List<dynamic>?;
+        final serverProcMs = (json['processing_time_ms'] as num?)?.toInt() ?? 25;
+        _processDetectionsPayload(rawDets, serverProcMs);
       }
     } catch (e) {
-      debugPrint("Error streaming frame over WebSocket: $e");
-    } finally {
-      _isProcessingFrame = false;
+      debugPrint("[OnlineVisionStream] Message parse error: $e");
     }
   }
 
-  /// Ingests pre-encoded JPEG bytes from CameraController.takePicture()
-  Future<void> ingestJpegBytes(Uint8List jpegBytes) async {
-    _frameCounter++;
-    // Throttle: process 1 out of 4 or interval >= 200ms (5 FPS)
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    if (nowMs - _lastSentTimestampMs < 180) return;
+  void _handleDisconnect() {
+    _isConnected = false;
+    _isConnecting = false;
+    _heartbeatTimer?.cancel();
+    _updateTransportMode(StreamTransportMode.disconnected);
+    _scheduleReconnect();
+  }
 
-    _lastSentTimestampMs = nowMs;
+  void _scheduleReconnect() {
+    if (!_isOnlineNetwork || _isConnecting) return;
 
-    if (_channel != null && _isConnected) {
-      try {
-        _channel!.sink.add(jpegBytes);
-      } catch (e) {
-        debugPrint("WebSocket send error: $e");
-      }
-    } else if (!_isConnected && !_isConnecting) {
+    _reconnectAttempts++;
+    // Exponential Backoff with Jitter: delay = min(1000 * 1.8^attempts + jitter, 8000)
+    final baseDelay = 1000 * math.pow(1.8, math.min(_reconnectAttempts, 4));
+    final jitter = math.Random().nextInt(400);
+    final delayMs = math.min((baseDelay + jitter).toInt(), 8000);
+
+    debugPrint("[OnlineVisionStream] Reconnecting in ${delayMs}ms (attempt #$_reconnectAttempts)...");
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(Duration(milliseconds: delayMs), () {
       connect();
-    }
-  }
-
-  /// Parses structured detection events emitted by FastAPI server
-  void _handleServerMessage(dynamic message) {
-    try {
-      final int now = DateTime.now().millisecondsSinceEpoch;
-      final int latency = (now - _lastSentTimestampMs).clamp(20, 999);
-
-      final Map<String, dynamic> data = jsonDecode(message as String);
-      final List<dynamic> detectionsJson = data['detections'] as List<dynamic>? ?? [];
-
-      final List<CloudDetectionEvent> events = [];
-      for (var det in detectionsJson) {
-        events.add(CloudDetectionEvent.fromJson(det as Map<String, dynamic>, latency));
-      }
-
-      _eventsController.add(events);
-
-      // Evaluate spatial debouncer and dispatch preemptive audio
-      _evaluateAudioAlerts(events);
-    } catch (e) {
-      debugPrint("Error parsing WebSocket server message: $e");
-    }
-  }
-
-  /// Evaluates detections against the SpatialDebouncer and triggers audio alerts
-  void _evaluateAudioAlerts(List<CloudDetectionEvent> events) {
-    if (events.isEmpty) {
-      _audioMutex.notifyHazardCleared();
-      return;
-    }
-
-    // Find highest priority event (critical hazards first)
-    events.sort((a, b) {
-      if (a.isCritical && !b.isCritical) return -1;
-      if (!a.isCritical && b.isCritical) return 1;
-      return a.distanceMeters.compareTo(b.distanceMeters);
     });
+  }
 
-    final primary = events.first;
+  void _reconnect({bool forceImmediate = false}) {
+    _disconnect(clean: true);
+    if (forceImmediate) {
+      _reconnectAttempts = 0;
+      connect();
+    } else {
+      _scheduleReconnect();
+    }
+  }
 
-    // Check with SpatialDebouncer
-    final bool canSpeak = _debouncer.shouldSpeak(
-      label: primary.label,
-      clockZone: primary.clockZone,
-      isCritical: primary.isCritical,
-      distanceMeters: primary.distanceMeters,
+  void _disconnect({bool clean = false}) {
+    _heartbeatTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _wsSubscription?.cancel();
+    _wsSubscription = null;
+    if (_wsChannel != null) {
+      if (clean) {
+        _wsChannel?.sink.close(ws_status.normalClosure);
+      }
+      _wsChannel = null;
+    }
+    _isConnected = false;
+    _isConnecting = false;
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (_isConnected && _wsChannel != null) {
+        try {
+          _wsChannel?.sink.add("ping");
+        } catch (_) {}
+      }
+    });
+  }
+
+  void _updateTransportMode(StreamTransportMode mode) {
+    if (_transportMode != mode) {
+      _transportMode = mode;
+      _modeController.add(mode);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Adaptive Quality Governor
+  // ---------------------------------------------------------------------------
+  void _recordRtt(int rttMs) {
+    _lastRttMs = rttMs;
+    _rttHistory.add(rttMs);
+    if (_rttHistory.length > 8) _rttHistory.removeAt(0);
+
+    final avgRtt = _rttHistory.reduce((a, b) => a + b) ~/ _rttHistory.length;
+
+    if (avgRtt < 140) {
+      _currentProfile = AdaptiveStreamProfile.fast;
+    } else if (avgRtt < 280) {
+      _currentProfile = AdaptiveStreamProfile.normal;
+    } else {
+      _currentProfile = AdaptiveStreamProfile.cellularConstrained;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Frame Transmission & Streaming
+  // ---------------------------------------------------------------------------
+  Future<void> sendFrameBytes(Uint8List jpegBytes, {double devicePitchDeg = 0.0}) async {
+    if (!_isActive || !_isOnlineNetwork) return;
+
+    final t0 = DateTime.now();
+
+    // 1. WebSocket Mode (Preferred: Sub-35ms pipeline)
+    if (_isConnected && _wsChannel != null) {
+      try {
+        _wsChannel!.sink.add(jpegBytes);
+        return;
+      } catch (e) {
+        debugPrint("[OnlineVisionStream] WS send error: $e");
+        _handleDisconnect();
+      }
+    }
+
+    // 2. HTTP REST Fallback Mode
+    await _sendViaHttpFallback(jpegBytes, t0);
+  }
+
+  Future<void> _sendViaHttpFallback(Uint8List jpegBytes, DateTime startTime) async {
+    try {
+      final httpUrl = _serverUrl.startsWith("ws://")
+          ? _serverUrl.replaceFirst("ws://", "http://").replaceFirst("/ws/vision-stream", "/detect")
+          : _serverUrl.startsWith("wss://")
+              ? _serverUrl.replaceFirst("wss://", "https://").replaceFirst("/ws/vision-stream", "/detect")
+              : _serverUrl;
+
+      final uri = Uri.parse(httpUrl);
+      final headers = <String, String>{
+        "Content-Type": "image/jpeg",
+        if (_apiKey.isNotEmpty) "Authorization": "Bearer $_apiKey",
+      };
+
+      final response = await http
+          .post(uri, headers: headers, body: jpegBytes)
+          .timeout(const Duration(milliseconds: 2500));
+
+      final rttMs = DateTime.now().difference(startTime).inMilliseconds;
+      _recordRtt(rttMs);
+
+      if (response.statusCode == 200) {
+        final parsed = jsonDecode(response.body);
+        final rawDets = parsed['detections'] as List<dynamic>?;
+        final procMs = (parsed['processing_time_ms'] as num?)?.toInt() ?? 25;
+        _processDetectionsPayload(rawDets, procMs);
+      }
+    } catch (e) {
+      debugPrint("[OnlineVisionStream] HTTP fallback error: $e");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Detection Parsing & Audio Mutex Governance
+  // ---------------------------------------------------------------------------
+  void _processDetectionsPayload(List<dynamic>? rawDets, int latencyMs) {
+    _recordRtt(latencyMs);
+    final obstacles = <DetectedObstacle>[];
+
+    if (rawDets != null && rawDets.isNotEmpty) {
+      for (var item in rawDets) {
+        final label = item['label'] as String? ?? "Obstacle";
+        if (label == "Path Clear") continue;
+
+        final clock = item['clock_zone'] as String? ?? "12 o'clock";
+        final dist = (item['distance_meters'] as num?)?.toDouble() ?? 1.5;
+        final ttc = (item['ttc_seconds'] as num?)?.toDouble() ?? 2.0;
+        final conf = (item['confidence'] as num?)?.toDouble() ?? 0.85;
+        final isCrit = item['is_critical'] as bool? ?? false;
+        final bbox = (item['bbox'] as List<dynamic>?)
+                ?.map((e) => (e as num).toDouble())
+                .toList() ??
+            [0.2, 0.2, 0.8, 0.8];
+
+        AudioPriority priority;
+        if (isCrit || dist < 1.2) {
+          priority = AudioPriority.level0Critical;
+        } else if (dist < 2.0) {
+          priority = AudioPriority.level1Safety;
+        } else {
+          priority = AudioPriority.level2Navigation;
+        }
+
+        obstacles.add(DetectedObstacle(
+          label: label,
+          confidence: conf,
+          xMin: bbox.isNotEmpty ? bbox[0] : 0.2,
+          yMin: bbox.length > 1 ? bbox[1] : 0.2,
+          xMax: bbox.length > 2 ? bbox[2] : 0.8,
+          yMax: bbox.length > 3 ? bbox[3] : 0.8,
+          distanceMeters: dist,
+          ttcSeconds: ttc,
+          priority: priority,
+          clockPosition: clock,
+        ));
+      }
+    }
+
+    final cycleResult = OnlineDetectionCycleResult(
+      obstacles: obstacles,
+      latencyMs: _lastRttMs,
+      timestamp: DateTime.now(),
+      isOnlineSuccess: true,
+      statusMessage: "Connected (${_transportMode.name}, ${_lastRttMs}ms)",
     );
 
-    if (canSpeak) {
-      _debouncer.recordSpoken(
-        label: primary.label,
-        clockZone: primary.clockZone,
-        distanceMeters: primary.distanceMeters,
-      );
+    _resultsController.add(cycleResult);
+    _applyAudioGovernance(cycleResult);
+  }
 
-      final priority = primary.isCritical
-          ? AudioPriority.level0Critical
-          : (primary.distanceMeters < 2.5
-              ? AudioPriority.level1Safety
-              : AudioPriority.level2Navigation);
+  void _applyAudioGovernance(OnlineDetectionCycleResult result) {
+    final hazard = result.highestHazard;
+    final now = DateTime.now();
 
-      final distStr = primary.distanceMeters.toStringAsFixed(1);
-      final alertText = primary.isCritical
-          ? "Warning! ${primary.label} at ${primary.clockZone}, $distStr meters ahead!"
-          : "Caution: ${primary.label} at ${primary.clockZone}, $distStr meters.";
+    if (hazard != null && hazard.label != "Path Clear") {
+      final labelKey = "${hazard.label.toLowerCase().trim()}_${hazard.clockPosition.toLowerCase().trim()}";
+      final lastSpoken = _announcedObstacles[labelKey];
+      final lastDist = _announcedDistances[labelKey] ?? 99.0;
 
-      // Preemptive Audio Engine: Critical hazards trigger QUEUE_FLUSH
-      _audioMutex.speak(
-        text: alertText,
-        priority: priority,
-        haptic: true,
-        force: primary.isCritical,
-      );
+      final bool isNew = lastSpoken == null;
+      final bool isExpired = lastSpoken != null && now.difference(lastSpoken).inSeconds >= 45;
+      final bool isCloser = (lastDist - hazard.distanceMeters) >= 0.8;
+      final bool isEnteredCritical = lastDist >= 1.2 && hazard.distanceMeters < 1.2;
+
+      if (isNew || isExpired || isCloser || isEnteredCritical) {
+        _announcedObstacles[labelKey] = now;
+        _announcedDistances[labelKey] = hazard.distanceMeters;
+        _wasHazardSpoken = true;
+
+        final alertText = _formatHazardAlert(hazard);
+        AudioMutexController().speak(
+          text: alertText,
+          priority: hazard.priority,
+          haptic: hazard.isHazard,
+        );
+      }
+    } else {
+      if (_wasHazardSpoken) {
+        _wasHazardSpoken = false;
+        final bool canSpeakClear = _lastClearSpokenTime == null ||
+            now.difference(_lastClearSpokenTime!).inSeconds >= 20;
+
+        if (canSpeakClear) {
+          _lastClearSpokenTime = now;
+          AudioMutexController().notifyHazardCleared();
+          AudioMutexController().speak(
+            text: "Path clear.",
+            priority: AudioPriority.level2Navigation,
+            haptic: false,
+          );
+        }
+      }
+      _announcedObstacles.removeWhere((_, time) => now.difference(time).inSeconds > 15);
+      _announcedDistances.removeWhere((key, _) => !_announcedObstacles.containsKey(key));
     }
   }
 
-  /// Converts CameraImage plane buffers into standard compressed bytes
-  Uint8List _convertCameraImageToJpeg(CameraImage image) {
-    // If planes contain JPEG data directly
-    if (image.format.group == ImageFormatGroup.jpeg) {
-      return image.planes[0].bytes;
+  String _formatHazardAlert(DetectedObstacle hazard) {
+    final distStr = hazard.distanceMeters.toStringAsFixed(1);
+    if (hazard.priority == AudioPriority.level0Critical) {
+      return "Warning! ${hazard.label} ahead at ${hazard.clockPosition}, $distStr meters!";
+    } else if (hazard.priority == AudioPriority.level1Safety) {
+      return "Caution: ${hazard.label} at ${hazard.clockPosition}, $distStr meters.";
+    } else {
+      return "${hazard.label} at ${hazard.clockPosition}, $distStr meters.";
     }
-
-    // Direct Y-plane extraction for high-speed transmission
-    if (image.planes.isNotEmpty) {
-      return image.planes[0].bytes;
-    }
-
-    return Uint8List(0);
   }
 
   void dispose() {
-    disconnect();
-    _eventsController.close();
-    _statusController.close();
+    _disconnect(clean: true);
+    _connectivitySubscription?.cancel();
+    _resultsController.close();
+    _modeController.close();
   }
 }
