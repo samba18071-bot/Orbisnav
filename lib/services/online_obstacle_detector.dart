@@ -87,8 +87,15 @@ class OnlineObstacleDetector {
     "person", "car", "motorcycle", "bus", "truck", "bicycle", "dog", "horse"
   };
 
-  // Endpoint configuration (default to reverse-forwarded localhost port 8000 or custom cloud endpoint)
-  String _endpointUrl = "http://127.0.0.1:8000/detect";
+  // Multi-endpoint candidates (Wi-Fi LAN, USB adb reverse, Android emulator)
+  static const List<String> defaultCandidates = [
+    "http://192.168.31.129:8000/detect", // Wi-Fi LAN IP
+    "http://127.0.0.1:8000/detect",      // USB Tethering / adb reverse
+    "http://10.0.2.2:8000/detect",       // Android emulator
+  ];
+
+  String _endpointUrl = "http://192.168.31.129:8000/detect";
+  int _activeCandidateIndex = 0;
   String? _apiKey;
   bool _isEnabled = true;
   bool _isProcessingFrame = false;
@@ -107,6 +114,8 @@ class OnlineObstacleDetector {
       _resultsController.stream;
 
   bool get isEnabled => _isEnabled;
+  String get endpointUrl => _endpointUrl;
+  
   void setEnabled(bool enabled) {
     _isEnabled = enabled;
   }
@@ -228,82 +237,96 @@ class OnlineObstacleDetector {
     double pitchDeg,
     Stopwatch stopwatch,
   ) async {
-    // 1. Attempt connection to YOLOv8 COCO Vision server (port 8000 via adb reverse or local network)
-    try {
-      final uri = Uri.parse(_endpointUrl);
-      final headers = <String, String>{"Content-Type": "image/jpeg"};
-      if (_apiKey != null && _apiKey!.isNotEmpty) {
-        headers["Authorization"] = "Bearer $_apiKey";
-      }
-      final response = await http
-          .post(
-            uri,
-            headers: headers,
-            body: jpegBytes,
-          )
-          .timeout(const Duration(milliseconds: 1400));
+    // 1. Build endpoint candidate list (current primary first, then remaining fallbacks)
+    final candidateUrls = <String>[
+      _endpointUrl,
+      ...defaultCandidates.where((c) => c != _endpointUrl),
+    ];
 
-      final latencyMs = stopwatch.elapsedMilliseconds;
+    for (var candidate in candidateUrls) {
+      try {
+        final uri = Uri.parse(candidate);
+        final headers = <String, String>{"Content-Type": "image/jpeg"};
+        if (_apiKey != null && _apiKey!.isNotEmpty) {
+          headers["Authorization"] = "Bearer $_apiKey";
+        }
+        final response = await http
+            .post(
+              uri,
+              headers: headers,
+              body: jpegBytes,
+            )
+            .timeout(const Duration(milliseconds: 1400));
 
-      if (response.statusCode == 200) {
-        final parsed = jsonDecode(response.body);
-        final rawDets = parsed['detections'] as List<dynamic>?;
-        if (rawDets != null && rawDets.isNotEmpty) {
-          final obstacles = <DetectedObstacle>[];
-          for (var item in rawDets) {
-            final label = item['label'] as String? ?? "Obstacle";
-            if (label == "Path Clear") continue;
+        final latencyMs = stopwatch.elapsedMilliseconds;
 
-            final clock = item['clock_zone'] as String? ?? "12 o'clock";
-            final dist = (item['distance_meters'] as num?)?.toDouble() ?? 1.5;
-            final ttc = (item['ttc_seconds'] as num?)?.toDouble() ?? 2.0;
-            final conf = (item['confidence'] as num?)?.toDouble() ?? 0.85;
-            final bbox = (item['bbox'] as List<dynamic>?)
-                    ?.map((e) => (e as num).toDouble())
-                    .toList() ??
-                [0.2, 0.2, 0.8, 0.8];
-
-            final lower = label.toLowerCase();
-            AudioPriority priority;
-            if (tabletopClasses.contains(lower)) {
-              // Tabletop / workstation items are non-critical navigation cues
-              priority = AudioPriority.level2Navigation;
-            } else if (collisionHazardClasses.contains(lower) ||
-                movingHazardClasses.contains(lower)) {
-              priority = dist < 1.2
-                  ? AudioPriority.level0Critical
-                  : AudioPriority.level1Safety;
-            } else {
-              priority = dist < 1.0
-                  ? AudioPriority.level1Safety
-                  : AudioPriority.level2Navigation;
-            }
-
-            obstacles.add(DetectedObstacle(
-              label: label,
-              confidence: conf,
-              xMin: bbox.isNotEmpty ? bbox[0] : 0.2,
-              yMin: bbox.length > 1 ? bbox[1] : 0.2,
-              xMax: bbox.length > 2 ? bbox[2] : 0.8,
-              yMax: bbox.length > 3 ? bbox[3] : 0.8,
-              distanceMeters: dist,
-              ttcSeconds: ttc,
-              priority: priority,
-              clockPosition: clock,
-            ));
+        if (response.statusCode == 200) {
+          // Successfully connected! Update active primary endpoint
+          if (_endpointUrl != candidate) {
+            _endpointUrl = candidate;
+            debugPrint("Switched active vision endpoint to: $candidate");
           }
 
-          return OnlineDetectionCycleResult(
-            obstacles: obstacles,
-            latencyMs: latencyMs,
-            timestamp: DateTime.now(),
-            isOnlineSuccess: true,
-            statusMessage: "YOLOv8 COCO Online (${latencyMs}ms)",
-          );
+          final parsed = jsonDecode(response.body);
+          final rawDets = parsed['detections'] as List<dynamic>?;
+          if (rawDets != null && rawDets.isNotEmpty) {
+            final obstacles = <DetectedObstacle>[];
+            for (var item in rawDets) {
+              final label = item['label'] as String? ?? "Obstacle";
+              if (label == "Path Clear") continue;
+
+              final clock = item['clock_zone'] as String? ?? "12 o'clock";
+              final dist = (item['distance_meters'] as num?)?.toDouble() ?? 1.5;
+              final ttc = (item['ttc_seconds'] as num?)?.toDouble() ?? 2.0;
+              final conf = (item['confidence'] as num?)?.toDouble() ?? 0.85;
+              final bbox = (item['bbox'] as List<dynamic>?)
+                      ?.map((e) => (e as num).toDouble())
+                      .toList() ??
+                  [0.2, 0.2, 0.8, 0.8];
+
+              final lower = label.toLowerCase();
+              AudioPriority priority;
+              if (tabletopClasses.contains(lower)) {
+                // Tabletop / workstation items are non-critical navigation cues
+                priority = AudioPriority.level2Navigation;
+              } else if (collisionHazardClasses.contains(lower) ||
+                  movingHazardClasses.contains(lower)) {
+                priority = dist < 1.2
+                    ? AudioPriority.level0Critical
+                    : AudioPriority.level1Safety;
+              } else {
+                priority = dist < 1.0
+                    ? AudioPriority.level1Safety
+                    : AudioPriority.level2Navigation;
+              }
+
+              obstacles.add(DetectedObstacle(
+                label: label,
+                confidence: conf,
+                xMin: bbox.isNotEmpty ? bbox[0] : 0.2,
+                yMin: bbox.length > 1 ? bbox[1] : 0.2,
+                xMax: bbox.length > 2 ? bbox[2] : 0.8,
+                yMax: bbox.length > 3 ? bbox[3] : 0.8,
+                distanceMeters: dist,
+                ttcSeconds: ttc,
+                priority: priority,
+                clockPosition: clock,
+              ));
+            }
+
+            final hostDisplay = Uri.parse(candidate).host;
+            return OnlineDetectionCycleResult(
+              obstacles: obstacles,
+              latencyMs: latencyMs,
+              timestamp: DateTime.now(),
+              isOnlineSuccess: true,
+              statusMessage: "AI Online ($hostDisplay, ${latencyMs}ms)",
+            );
+          }
         }
+      } catch (_) {
+        // Continue trying next candidate
       }
-    } catch (_) {
-      // Fall through to real-time non-hallucinating local standby
     }
 
     // 2. Non-hallucinating Standby Mode:
