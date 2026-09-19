@@ -312,7 +312,7 @@ def analyze_frame(img: np.ndarray, frame_id: int) -> List[Dict[str, Any]]:
 
     return detections
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root_portal():
     apk_path = "OrbisNav-release.apk"
     apk_exists = os.path.exists(apk_path)
@@ -326,7 +326,7 @@ async def root_portal():
         "apk_size_mb": apk_size_mb
     }
 
-@app.get("/download-apk")
+@app.api_route("/download-apk", methods=["GET", "HEAD"])
 async def download_apk():
     apk_path = "OrbisNav-release.apk"
     if not os.path.exists(apk_path):

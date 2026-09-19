@@ -87,15 +87,15 @@ class OnlineObstacleDetector {
     "person", "car", "motorcycle", "bus", "truck", "bicycle", "dog", "horse"
   };
 
-  // Multi-endpoint candidates (Wi-Fi LAN first for ~50ms speed, then Global Cloud, USB tethering, Emulator)
+  // Multi-endpoint candidates (Global Cloud HTTPS first for universal 4G/5G/Wi-Fi connectivity)
   static const List<String> defaultCandidates = [
-    "http://192.168.31.129:8000/detect", // Ultra-fast Local Wi-Fi LAN
-    "https://protection-citizenship-details-valued.trycloudflare.com/detect", // Global Cloud HTTPS (4G/5G)
+    "https://protection-citizenship-details-valued.trycloudflare.com/detect", // Global Cloud HTTPS (Universal: 4G/5G & Wi-Fi)
+    "http://192.168.31.129:8000/detect", // Local Wi-Fi LAN
     "http://127.0.0.1:8000/detect",      // USB Tethering / adb reverse
     "http://10.0.2.2:8000/detect",       // Android emulator
   ];
 
-  String _endpointUrl = "http://192.168.31.129:8000/detect";
+  String _endpointUrl = "https://protection-citizenship-details-valued.trycloudflare.com/detect";
   int _currentCandidateIndex = 0;
   int _consecutiveFailures = 0;
   String? _apiKey;
@@ -255,7 +255,7 @@ class OnlineObstacleDetector {
             headers: headers,
             body: jpegBytes,
           )
-          .timeout(const Duration(milliseconds: 900));
+          .timeout(const Duration(milliseconds: 2500));
 
       final latencyMs = stopwatch.elapsedMilliseconds;
 
