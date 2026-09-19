@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  orbisnav-vision:
+    build: .
+    container_name: orbisnav-vision-server
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+    volumes:
+      - ./weights:/app/weights

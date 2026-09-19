@@ -89,7 +89,7 @@ class NameboardNavigationService {
   String _clockVector = "12 o'clock";
 
   // Visual OCR State
-  String _ocrEndpoint = "http://192.168.31.129:8000/detect-board";
+  String _ocrEndpoint = "https://protection-citizenship-details-valued.trycloudflare.com/detect-board";
   bool _isProcessingOcrFrame = false;
   SightedNameboard? _targetBoard;
   List<SightedNameboard> _allVisibleBoards = [];

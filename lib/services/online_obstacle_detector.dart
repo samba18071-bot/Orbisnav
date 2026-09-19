@@ -87,14 +87,15 @@ class OnlineObstacleDetector {
     "person", "car", "motorcycle", "bus", "truck", "bicycle", "dog", "horse"
   };
 
-  // Multi-endpoint candidates (Wi-Fi LAN, USB adb reverse, Android emulator)
+  // Multi-endpoint candidates (Global Cloud HTTPS, Wi-Fi LAN, USB adb reverse, Android emulator)
   static const List<String> defaultCandidates = [
+    "https://protection-citizenship-details-valued.trycloudflare.com/detect", // Global Cloud Endpoint (4G/5G/any Wi-Fi)
     "http://192.168.31.129:8000/detect", // Wi-Fi LAN IP
     "http://127.0.0.1:8000/detect",      // USB Tethering / adb reverse
     "http://10.0.2.2:8000/detect",       // Android emulator
   ];
 
-  String _endpointUrl = "http://192.168.31.129:8000/detect";
+  String _endpointUrl = "https://protection-citizenship-details-valued.trycloudflare.com/detect";
   int _activeCandidateIndex = 0;
   String? _apiKey;
   bool _isEnabled = true;
