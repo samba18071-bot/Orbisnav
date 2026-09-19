@@ -250,8 +250,8 @@ def analyze_frame(img: np.ndarray, frame_id: int) -> List[Dict[str, Any]]:
     height, width = img.shape[:2]
     detections = []
 
-    # Fast 320px inference for sub-30ms execution on Apple Silicon GPU (MPS)
-    results = yolo_model(img, imgsz=320, conf=0.25, verbose=False)
+    # High-accuracy 480px inference for universal object detection on Apple Silicon GPU (MPS)
+    results = yolo_model(img, imgsz=480, conf=0.15, verbose=False)
 
     if results and len(results) > 0 and results[0].boxes is not None:
         boxes = results[0].boxes
