@@ -4,7 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../controllers/audio_mutex_controller.dart';
 
-/// Represents an individual obstacle detected online via COCO / cloud vision
+import 'kinematic_motion_tracker.dart';
+
+/// Represents an individual obstacle detected with metric distance, clock direction, and dynamic motion kinematics.
 class DetectedObstacle {
   final String label;
   final double confidence;
@@ -16,6 +18,8 @@ class DetectedObstacle {
   final double ttcSeconds;
   final AudioPriority priority;
   final String clockPosition; // e.g., "12 o'clock", "2 o'clock", "10 o'clock"
+  final ObjectMotionType motionType;
+  final String detailedDescription;
 
   DetectedObstacle({
     required this.label,
@@ -28,11 +32,21 @@ class DetectedObstacle {
     required this.ttcSeconds,
     required this.priority,
     required this.clockPosition,
-  });
+    this.motionType = ObjectMotionType.stationaryAhead,
+    String? detailedDescription,
+  }) : detailedDescription = detailedDescription ?? "$label ahead";
 
   bool get isHazard =>
       priority == AudioPriority.level0Critical ||
       priority == AudioPriority.level1Safety;
+
+  /// Full speech announcement with rich dynamic detail (e.g. "Person is walking towards you at 12 o'clock, 2.1 meters")
+  String get speechAnnouncement {
+    if (detailedDescription.isNotEmpty && !detailedDescription.endsWith("ahead")) {
+      return "$detailedDescription at $clockPosition, ${distanceMeters.toStringAsFixed(1)} meters.";
+    }
+    return "$label at $clockPosition, ${distanceMeters.toStringAsFixed(1)} meters.";
+  }
 }
 
 /// Result of an online obstacle detection cycle
@@ -86,15 +100,14 @@ class OnlineObstacleDetector {
     "person", "car", "motorcycle", "bus", "truck", "bicycle", "dog", "horse"
   };
 
-  // Multi-endpoint candidates (Global Cloud HTTPS first for universal 4G/5G/Wi-Fi connectivity)
+  // Multi-endpoint candidates (USB ADB reverse first, then Local Wi-Fi)
   static const List<String> defaultCandidates = [
-    "https://protection-citizenship-details-valued.trycloudflare.com/detect", // Global Cloud HTTPS (Universal: 4G/5G & Wi-Fi)
+    "http://127.0.0.1:8000/detect",      // USB ADB reverse (Ultra-low latency ~5ms)
     "http://192.168.31.129:8000/detect", // Local Wi-Fi LAN
-    "http://127.0.0.1:8000/detect",      // USB Tethering / adb reverse
     "http://10.0.2.2:8000/detect",       // Android emulator
   ];
 
-  String _endpointUrl = "https://protection-citizenship-details-valued.trycloudflare.com/detect";
+  String _endpointUrl = "http://127.0.0.1:8000/detect";
   int _currentCandidateIndex = 0;
   int _consecutiveFailures = 0;
   String? _apiKey;

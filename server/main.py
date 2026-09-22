@@ -571,6 +571,45 @@ async def detect_nameboard(request: Request, query: str = ""):
         logger.error(f"Error in /detect-board: {e}", exc_info=True)
         return {"status": "error", "message": str(e), "boards": []}
 
+@app.post("/analyze-scene")
+async def analyze_scene_endpoint(request: Request):
+    """Analyzes a camera frame to generate rich contextual scene descriptions and moving object analysis."""
+    try:
+        frame_bytes = await request.body()
+        if not frame_bytes:
+            return {"status": "error", "description": "Empty image frame received"}
+
+        np_arr = np.frombuffer(frame_bytes, np.uint8)
+        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return {"status": "error", "description": "Failed to decode image frame"}
+
+        detections = analyze_frame(img)
+        labels = [d["label"] for d in detections if d["label"] != "Path Clear"]
+        
+        if labels:
+            items_str = ", ".join(labels[:4])
+            scene_summary = f"Looking ahead. Identified {items_str}. "
+            moving = [d for d in detections if d.get("is_critical") or d["label"] in ["person", "car", "bicycle", "motorcycle"]]
+            if moving:
+                m_item = moving[0]
+                scene_summary += f"{m_item['label'].capitalize()} located at {m_item['clock_zone']}, {m_item['distance_meters']} meters away."
+            else:
+                scene_summary += "Path directly ahead appears clear."
+        else:
+            scene_summary = "Indoor area with open pathway directly ahead."
+
+        return {
+            "status": "ok",
+            "summary": scene_summary,
+            "description": scene_summary,
+            "detections": detections,
+            "total_objects": len(detections)
+        }
+    except Exception as e:
+        logger.error(f"Error in /analyze-scene: {e}", exc_info=True)
+        return {"status": "error", "description": "Scene perception processing error."}
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8000"))

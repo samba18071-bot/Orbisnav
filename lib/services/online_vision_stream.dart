@@ -8,6 +8,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 import '../controllers/audio_mutex_controller.dart';
 import 'online_obstacle_detector.dart';
+import 'kinematic_motion_tracker.dart';
 
 /// Connection mode of the cloud streaming service
 enum StreamTransportMode {
@@ -75,7 +76,7 @@ class OnlineVisionStream {
   // ---------------------------------------------------------------------------
   static const String _envServerUrl = String.fromEnvironment(
     'SERVER_URL',
-    defaultValue: 'wss://protection-citizenship-details-valued.trycloudflare.com/ws/vision-stream',
+    defaultValue: 'ws://127.0.0.1:8000/ws/vision-stream',
   );
 
   static const String _envApiKey = String.fromEnvironment(
@@ -88,11 +89,10 @@ class OnlineVisionStream {
 
   // Endpoint fallback pool
   static const List<String> fallbackUrls = [
-    "wss://protection-citizenship-details-valued.trycloudflare.com/ws/vision-stream",
-    "https://protection-citizenship-details-valued.trycloudflare.com/detect",
+    "ws://127.0.0.1:8000/ws/vision-stream",
+    "http://127.0.0.1:8000/detect",
     "ws://192.168.31.129:8000/ws/vision-stream",
     "http://192.168.31.129:8000/detect",
-    "ws://127.0.0.1:8000/ws/vision-stream",
   ];
 
   // ---------------------------------------------------------------------------
@@ -207,14 +207,28 @@ class OnlineVisionStream {
         _scheduleReconnect();
       }
     } else {
-      // HTTP REST Mode
-      _isConnected = true;
-      _isConnecting = false;
-      _updateTransportMode(
-        _serverUrl.startsWith("https://")
-            ? StreamTransportMode.httpRestCloud
-            : StreamTransportMode.httpRestLocal,
-      );
+      // HTTP REST Mode - Probe /health or /detect first
+      try {
+        final healthUrl = _serverUrl.replaceFirst("/detect", "/health");
+        final res = await http.get(Uri.parse(healthUrl)).timeout(const Duration(milliseconds: 1500));
+        if (res.statusCode == 200) {
+          _isConnected = true;
+          _isConnecting = false;
+          _updateTransportMode(
+            _serverUrl.startsWith("https://")
+                ? StreamTransportMode.httpRestCloud
+                : StreamTransportMode.httpRestLocal,
+          );
+        } else {
+          _isConnected = false;
+          _isConnecting = false;
+          _updateTransportMode(StreamTransportMode.disconnected);
+        }
+      } catch (_) {
+        _isConnected = false;
+        _isConnecting = false;
+        _updateTransportMode(StreamTransportMode.disconnected);
+      }
     }
   }
 
@@ -444,12 +458,14 @@ class OnlineVisionStream {
       }
     }
 
+    final enriched = KinematicMotionTracker().enrichWithKinematics(obstacles);
+
     final cycleResult = OnlineDetectionCycleResult(
-      obstacles: obstacles,
+      obstacles: enriched,
       latencyMs: _lastRttMs,
       timestamp: DateTime.now(),
       isOnlineSuccess: true,
-      statusMessage: "Connected (${_transportMode.name}, ${_lastRttMs}ms)",
+      statusMessage: "Online Cloud Vision (${_transportMode.name}, ${_lastRttMs}ms)",
     );
 
     _resultsController.add(cycleResult);
@@ -466,16 +482,18 @@ class OnlineVisionStream {
       final lastDist = _announcedDistances[labelKey] ?? 99.0;
 
       final bool isNew = lastSpoken == null;
-      final bool isExpired = lastSpoken != null && now.difference(lastSpoken).inSeconds >= 45;
-      final bool isCloser = (lastDist - hazard.distanceMeters) >= 0.8;
+      final bool isExpired = lastSpoken != null && now.difference(lastSpoken).inSeconds >= 20;
+      final bool isCloser = (lastDist - hazard.distanceMeters) >= 0.5;
       final bool isEnteredCritical = lastDist >= 1.2 && hazard.distanceMeters < 1.2;
+      final bool isApproaching = hazard.motionType == ObjectMotionType.approachingTowardsUser &&
+          (now.difference(lastSpoken ?? DateTime.fromMillisecondsSinceEpoch(0)).inSeconds >= 8);
 
-      if (isNew || isExpired || isCloser || isEnteredCritical) {
+      if (isNew || isExpired || isCloser || isEnteredCritical || isApproaching) {
         _announcedObstacles[labelKey] = now;
         _announcedDistances[labelKey] = hazard.distanceMeters;
         _wasHazardSpoken = true;
 
-        final alertText = _formatHazardAlert(hazard);
+        final alertText = hazard.speechAnnouncement;
         AudioMutexController().speak(
           text: alertText,
           priority: hazard.priority,
@@ -500,17 +518,6 @@ class OnlineVisionStream {
       }
       _announcedObstacles.removeWhere((_, time) => now.difference(time).inSeconds > 15);
       _announcedDistances.removeWhere((key, _) => !_announcedObstacles.containsKey(key));
-    }
-  }
-
-  String _formatHazardAlert(DetectedObstacle hazard) {
-    final distStr = hazard.distanceMeters.toStringAsFixed(1);
-    if (hazard.priority == AudioPriority.level0Critical) {
-      return "Warning! ${hazard.label} ahead at ${hazard.clockPosition}, $distStr meters!";
-    } else if (hazard.priority == AudioPriority.level1Safety) {
-      return "Caution: ${hazard.label} at ${hazard.clockPosition}, $distStr meters.";
-    } else {
-      return "${hazard.label} at ${hazard.clockPosition}, $distStr meters.";
     }
   }
 

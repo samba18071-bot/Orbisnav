@@ -6,7 +6,10 @@ import 'package:camera/camera.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'controllers/audio_mutex_controller.dart';
 import 'services/online_obstacle_detector.dart';
+import 'services/on_device_obstacle_detector.dart';
 import 'services/online_vision_stream.dart';
+import 'services/kinematic_motion_tracker.dart';
+import 'services/cloud_ai_vision_service.dart';
 import 'models/navigation_destination.dart';
 import 'services/nameboard_navigation_service.dart';
 
@@ -80,18 +83,25 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   // Audio / Speech State (Governed by AudioMutexController)
   final AudioMutexController _audioMutex = AudioMutexController();
   final OnlineVisionStream _visionStream = OnlineVisionStream();
-  String _activeSpeech = "AI-Eyes Online Vision Ready. Path Clear.";
+  final OnDeviceObstacleDetector _onDeviceDetector = OnDeviceObstacleDetector();
+  final CloudAIVisionService _cloudAiService = CloudAIVisionService();
+  String _activeSpeech = "AI-Eyes Vision Ready. Path Clear.";
   bool _isSpeaking = false;
   String _lastHaptic = "Dual 50ms Pulse (Boot)";
 
-  // Online Cloud Vision State
+  // Vision State (Hybrid: High-Speed On-Device ML Edge Engine + Cloud Fallback)
   bool _isOnlineVisionActive = true;
   bool _isCapturingOnlineFrame = false;
-  int _cloudLatencyMs = 68;
-  String _cloudStatus = "CONNECTED (WebSocket Secure Cloud)";
+  int _cloudLatencyMs = 45;
+  String _cloudStatus = "Standalone On-Device ML (Offline Ready)";
   List<DetectedObstacle> _activeObstacles = [];
   DetectedObstacle? _primaryHazard;
   Timer? _onlineStreamTimer;
+  StreamSubscription<OnlineDetectionCycleResult>? _onDeviceSubscription;
+
+  // Multimodal AI Scene Comprehension State
+  SceneAnalysisResult _latestSceneAnalysis = SceneAnalysisResult.empty();
+  StreamSubscription<SceneAnalysisResult>? _sceneAnalysisSubscription;
 
   // Destination & Landmark Nameboard Navigation
   final NameboardNavigationService _navService = NameboardNavigationService();
@@ -123,10 +133,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       }
     });
 
-    // 2. Connect and Listen to Resilient WebSocket / Cloud Vision Stream
-    await _visionStream.connect();
-    _detectionSubscription = _visionStream.resultsStream.listen((result) {
-      if (mounted) {
+    // 2. Initialize Edge-Native On-Device ML Engine (100% Offline, no Mac/server required)
+    await _onDeviceDetector.initialize();
+    _onDeviceSubscription = _onDeviceDetector.resultsStream.listen((result) {
+      if (mounted && !_visionStream.isConnected) {
         setState(() {
           _cloudLatencyMs = result.latencyMs;
           _cloudStatus = result.statusMessage;
@@ -136,7 +146,29 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       }
     });
 
-    // 3. Listen to Destination & Board Navigation Status
+    // 3. Connect and Listen to Cloud/Local Vision Stream (if server is reachable)
+    await _visionStream.connect();
+    _detectionSubscription = _visionStream.resultsStream.listen((result) {
+      if (mounted && _visionStream.isConnected) {
+        setState(() {
+          _cloudLatencyMs = result.latencyMs;
+          _cloudStatus = result.statusMessage;
+          _activeObstacles = result.obstacles;
+          _primaryHazard = result.highestHazard;
+        });
+      }
+    });
+
+    // 4. Listen to Online Multimodal AI Scene Analysis Stream
+    _sceneAnalysisSubscription = _cloudAiService.sceneStream.listen((scene) {
+      if (mounted) {
+        setState(() {
+          _latestSceneAnalysis = scene;
+        });
+      }
+    });
+
+    // 5. Listen to Destination & Board Navigation Status
     _navSubscription = _navService.statusStream.listen((state) {
       if (mounted) {
         setState(() {
@@ -145,18 +177,18 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       }
     });
 
-    // 4. Initialize CameraX with Portrait orientation
+    // 6. Initialize CameraX with Portrait orientation
     await _initCamera();
 
-    // 4. Start Hardware Accelerometer for Real Pitch and PDR
+    // 7. Start Hardware Accelerometer for Real Pitch and PDR
     _startSensorStream();
 
-    // 5. Start real-time Internet obstacle detection streaming loop
+    // 8. Start real-time obstacle detection streaming loop
     _startOnlineVisionStream();
 
     // Initial voice greeting
     _audioMutex.speak(
-      text: "AI Eyes online obstacle detection activated. Portrait mode ready.",
+      text: "AI Eyes obstacle detection activated. Standalone offline mode ready.",
       priority: AudioPriority.level2Navigation,
       haptic: true,
     );
@@ -257,10 +289,24 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       final image = await _cameraController!.takePicture();
       final bytes = await image.readAsBytes();
 
-      await _visionStream.sendFrameBytes(
-        bytes,
-        devicePitchDeg: _pitchDeg,
-      );
+      if (_visionStream.isConnected) {
+        // Fast Cloud / Local Server Stream
+        await _visionStream.sendFrameBytes(
+          bytes,
+          devicePitchDeg: _pitchDeg,
+        );
+      } else {
+        // 100% Standalone On-Device ML Edge Inference (Zero Mac / Zero Internet required)
+        await _onDeviceDetector.processFrameBytes(
+          bytes,
+          devicePitchDeg: _pitchDeg,
+        );
+      }
+
+      // Online Multimodal AI Scene Understanding & Detailed Object Description
+      if (_cloudAiService.isOnline && _cloudAiService.isAutoAnalyzeEnabled) {
+        _cloudAiService.analyzeScene(bytes);
+      }
 
       if (_navService.isNavigating) {
         await _navService.processCameraSnapshot(bytes);
@@ -292,6 +338,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     _onlineStreamTimer?.cancel();
     _sensorSubscription?.cancel();
     _detectionSubscription?.cancel();
+    _onDeviceSubscription?.cancel();
+    _sceneAnalysisSubscription?.cancel();
+    _onDeviceDetector.dispose();
+    _cloudAiService.dispose();
     _navSubscription?.cancel();
     _speechSubscription?.cancel();
     _destinationInputController.dispose();
@@ -377,6 +427,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
 
             // 3. Online Cloud Vision Status & Detected Obstacle Banner
             _buildOnlineObstacleCard(hasCriticalHazard),
+            const SizedBox(height: 14),
+
+            // 3b. Multimodal Generative AI Scene Understanding & Detailed Object Analysis
+            _buildSceneComprehensionCard(),
             const SizedBox(height: 14),
 
             // 4. Destination & Landmark Nameboard Navigation
@@ -729,7 +783,13 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               child: Row(
                 children: [
                   Icon(
-                    obs.isHazard ? Icons.warning_amber_rounded : Icons.info_outline,
+                    obs.motionType == ObjectMotionType.approachingTowardsUser
+                        ? Icons.directions_walk
+                        : obs.motionType == ObjectMotionType.overheadHazard
+                            ? Icons.warning_rounded
+                            : obs.isHazard
+                                ? Icons.warning_amber_rounded
+                                : Icons.info_outline,
                     color: obs.isHazard ? const Color(0xFFFF1744) : const Color(0xFF00E5FF),
                   ),
                   const SizedBox(width: 10),
@@ -738,7 +798,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          "${obs.label} (${obs.clockPosition})",
+                          "${obs.detailedDescription.isNotEmpty ? obs.detailedDescription : obs.label} (${obs.clockPosition})",
                           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
                         ),
                         Text(
@@ -752,6 +812,107 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               ),
             )),
           ]
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSceneComprehensionCard() {
+    final hasInternet = _cloudAiService.isOnline;
+    final isAnalyzing = _cloudAiService.isAnalyzing;
+    final scene = _latestSceneAnalysis;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1B4B).withValues(alpha: 0.7),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: hasInternet ? const Color(0xFF818CF8) : Colors.white24,
+          width: 1.5,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.auto_awesome,
+                color: hasInternet ? const Color(0xFFA5B4FC) : Colors.grey,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                "AI SCENE UNDERSTANDING",
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.1,
+                  color: hasInternet ? const Color(0xFFA5B4FC) : Colors.grey,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: hasInternet ? const Color(0xFF4338CA) : Colors.black45,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  hasInternet ? (isAnalyzing ? "ANALYZING..." : "ONLINE") : "OFFLINE",
+                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
+                ),
+              )
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            scene.sceneSummary,
+            style: const TextStyle(
+              fontSize: 13,
+              height: 1.35,
+              color: Colors.white,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          if (scene.detailedObjects.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: scene.detailedObjects.map((item) => Chip(
+                backgroundColor: const Color(0xFF312E81),
+                label: Text(item, style: const TextStyle(fontSize: 11, color: Colors.white)),
+                visualDensity: VisualDensity.compact,
+              )).toList(),
+            ),
+          ],
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: isAnalyzing
+                  ? null
+                  : () async {
+                      if (_cameraController != null && _cameraController!.value.isInitialized) {
+                        final img = await _cameraController!.takePicture();
+                        final bytes = await img.readAsBytes();
+                        await _cloudAiService.analyzeScene(bytes, force: true, speakResult: true);
+                      }
+                    },
+              icon: isAnalyzing
+                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.record_voice_over, size: 16),
+              label: Text(isAnalyzing ? "Describing Surroundings..." : "Describe Scene (Multimodal AI)"),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4F46E5),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          )
         ],
       ),
     );
