@@ -51,53 +51,48 @@ _PreprocessedData _isolateLetterboxPreprocess(Uint8List jpegBytes) {
   final int origW = rawImage.width;
   final int origH = rawImage.height;
 
-  // Calculate high-fidelity letterbox scale to preserve 100% geometric aspect ratio
+  // Calculate letterbox scale to preserve 100% geometric aspect ratio
   final double scale = math.min(targetSize / origW, targetSize / origH);
-  final int newW = (origW * scale).round();
-  final int newH = (origH * scale).round();
-  final double padX = (targetSize - newW) / 2.0;
-  final double padY = (targetSize - newH) / 2.0;
+  final int newW = (origW * scale).round().clamp(1, targetSize);
+  final int newH = (origH * scale).round().clamp(1, targetSize);
+  final int padX = ((targetSize - newW) / 2).round();
+  final int padY = ((targetSize - newH) / 2).round();
 
+  // Fast nearest-neighbor resize is 5-8x faster than bilinear on mobile CPU
   final resized = img.copyResize(
     rawImage,
     width: newW,
     height: newH,
-    interpolation: img.Interpolation.linear,
+    interpolation: img.Interpolation.nearest,
   );
 
-  final int padXInt = padX.round();
-  final int padYInt = padY.round();
-
-  // Create 320x320 float tensor with 114 gray background (0.447)
+  // Initialize tensor with neutral grey (114/255 = 0.447)
   final tensor = List.generate(
     1,
     (_) => List.generate(
       targetSize,
-      (y) => List.generate(
-        targetSize,
-        (x) {
-          final imgX = x - padXInt;
-          final imgY = y - padYInt;
-          if (imgX >= 0 && imgX < newW && imgY >= 0 && imgY < newH) {
-            final pixel = resized.getPixel(imgX, imgY);
-            return [
-              pixel.r / 255.0,
-              pixel.g / 255.0,
-              pixel.b / 255.0,
-            ];
-          } else {
-            return [0.447, 0.447, 0.447]; // Letterbox neutral padding
-          }
-        },
-      ),
+      (_) => List.generate(targetSize, (_) => [0.447, 0.447, 0.447]),
     ),
   );
+
+  final plane = tensor[0];
+  for (int y = 0; y < newH; y++) {
+    final targetRow = plane[padY + y];
+    for (int x = 0; x < newW; x++) {
+      final p = resized.getPixel(x, y);
+      targetRow[padX + x] = [
+        p.r / 255.0,
+        p.g / 255.0,
+        p.b / 255.0,
+      ];
+    }
+  }
 
   return _PreprocessedData(
     tensor: tensor,
     scale: scale,
-    padX: padX,
-    padY: padY,
+    padX: padX.toDouble(),
+    padY: padY.toDouble(),
     scaledW: newW.toDouble(),
     scaledH: newH.toDouble(),
   );

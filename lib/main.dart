@@ -206,6 +206,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     }
   }
 
+  DateTime _lastSensorUiUpdateTime = DateTime.now();
+
   void _startSensorStream() {
     _sensorSubscription = accelerometerEventStream().listen((AccelerometerEvent event) {
       final ax = event.x;
@@ -214,6 +216,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       final pitchRad = math.atan2(-ay, math.sqrt(ax * ax + az * az));
       final pitchDeg = pitchRad * (180.0 / math.pi);
       final rollDeg = math.atan2(ax, az) * (180.0 / math.pi);
+
+      // Always update pitch and roll variables instantly for vision calculations
+      _pitchDeg = pitchDeg;
+      _rollDeg = rollDeg;
 
       // PDR Step Detection
       final magnitude = math.sqrt(ax * ax + ay * ay + az * az);
@@ -237,27 +243,27 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         }
       }
 
-      if (mounted) {
-        setState(() {
-          _pitchDeg = pitchDeg;
-          _rollDeg = rollDeg;
-        });
+      // Throttle UI setState to 3.3 Hz (every 300ms) to prevent 100Hz rebuild storms and lag
+      if (mounted && now.difference(_lastSensorUiUpdateTime).inMilliseconds >= 300) {
+        _lastSensorUiUpdateTime = now;
+        setState(() {});
       }
     });
   }
 
   void _onStepDetected() {
-    setState(() {
-      _stepCount++;
-      _driftMeters += 0.025;
-    });
+    _stepCount++;
+    _driftMeters += 0.025;
+    if (mounted) {
+      setState(() {});
+    }
     HapticFeedback.lightImpact();
   }
 
   /// High-efficiency detection loop: runs asynchronously without locking the UI
   void _startVisionStream() {
     _visionStreamTimer?.cancel();
-    _visionStreamTimer = Timer.periodic(const Duration(milliseconds: 320), (_) {
+    _visionStreamTimer = Timer.periodic(const Duration(milliseconds: 480), (_) {
       if (_isVisionActive &&
           _isCameraInitialized &&
           !_isProcessingFrame &&
