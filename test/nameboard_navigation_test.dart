@@ -37,7 +37,7 @@ void main() {
 
       await service.startNavigation(dest);
       expect(service.isNavigating, isTrue);
-      expect(service.activeDestination?.name, equals("Starbucks Coffee"));
+      expect(service.activeDestination?.name, equals(dest.name));
 
       // Simulate walking closer step-by-step
       service.simulateStepCloser(10.0);

@@ -8,46 +8,99 @@ import '../controllers/audio_mutex_controller.dart';
 import 'online_obstacle_detector.dart';
 import 'kinematic_motion_tracker.dart';
 
-/// Top-level isolate worker to decode and normalize camera frames without blocking UI thread
-List<List<List<List<double>>>> _isolatePreprocessFrame(Uint8List jpegBytes) {
+/// Preprocessed tensor data and letterbox scaling factors passed from background isolate
+class _PreprocessedData {
+  final List<List<List<List<double>>>> tensor;
+  final double scale;
+  final double padX;
+  final double padY;
+  final double scaledW;
+  final double scaledH;
+
+  _PreprocessedData({
+    required this.tensor,
+    required this.scale,
+    required this.padX,
+    required this.padY,
+    required this.scaledW,
+    required this.scaledH,
+  });
+}
+
+/// Top-level isolate worker to decode, letterbox, and normalize camera frames without blocking UI thread
+_PreprocessedData _isolateLetterboxPreprocess(Uint8List jpegBytes) {
   const int targetSize = 320;
   final rawImage = img.decodeImage(jpegBytes);
   if (rawImage == null) {
-    return List.generate(
-      1,
-      (_) => List.generate(
-        targetSize,
-        (_) => List.generate(targetSize, (_) => [0.0, 0.0, 0.0]),
+    return _PreprocessedData(
+      tensor: List.generate(
+        1,
+        (_) => List.generate(
+          targetSize,
+          (_) => List.generate(targetSize, (_) => [0.447, 0.447, 0.447]),
+        ),
       ),
+      scale: 1.0,
+      padX: 0.0,
+      padY: 0.0,
+      scaledW: targetSize.toDouble(),
+      scaledH: targetSize.toDouble(),
     );
   }
 
-  // Aspect-fit center crop to avoid object distortion
-  final int minDim = math.min(rawImage.width, rawImage.height);
-  final int cropX = (rawImage.width - minDim) ~/ 2;
-  final int cropY = (rawImage.height - minDim) ~/ 2;
-  final cropped = img.copyCrop(rawImage, x: cropX, y: cropY, width: minDim, height: minDim);
-  final resized = img.copyResize(cropped, width: targetSize, height: targetSize, interpolation: img.Interpolation.linear);
+  final int origW = rawImage.width;
+  final int origH = rawImage.height;
 
-  final input = List.generate(
+  // Calculate high-fidelity letterbox scale to preserve 100% geometric aspect ratio
+  final double scale = math.min(targetSize / origW, targetSize / origH);
+  final int newW = (origW * scale).round();
+  final int newH = (origH * scale).round();
+  final double padX = (targetSize - newW) / 2.0;
+  final double padY = (targetSize - newH) / 2.0;
+
+  final resized = img.copyResize(
+    rawImage,
+    width: newW,
+    height: newH,
+    interpolation: img.Interpolation.linear,
+  );
+
+  final int padXInt = padX.round();
+  final int padYInt = padY.round();
+
+  // Create 320x320 float tensor with 114 gray background (0.447)
+  final tensor = List.generate(
     1,
     (_) => List.generate(
       targetSize,
       (y) => List.generate(
         targetSize,
         (x) {
-          final pixel = resized.getPixel(x, y);
-          return [
-            pixel.r / 255.0,
-            pixel.g / 255.0,
-            pixel.b / 255.0,
-          ];
+          final imgX = x - padXInt;
+          final imgY = y - padYInt;
+          if (imgX >= 0 && imgX < newW && imgY >= 0 && imgY < newH) {
+            final pixel = resized.getPixel(imgX, imgY);
+            return [
+              pixel.r / 255.0,
+              pixel.g / 255.0,
+              pixel.b / 255.0,
+            ];
+          } else {
+            return [0.447, 0.447, 0.447]; // Letterbox neutral padding
+          }
         },
       ),
     ),
   );
 
-  return input;
+  return _PreprocessedData(
+    tensor: tensor,
+    scale: scale,
+    padX: padX,
+    padY: padY,
+    scaledW: newW.toDouble(),
+    scaledH: newH.toDouble(),
+  );
 }
 
 /// Physical dimensional priors for real-world COCO and assistive navigation classes.
@@ -65,9 +118,28 @@ class _ObjectPrior {
   );
 }
 
+/// Internal detection candidate before filtering
+class _DetectionCandidate {
+  final String label;
+  final double score;
+  final double xMin;
+  final double yMin;
+  final double xMax;
+  final double yMax;
+
+  const _DetectionCandidate({
+    required this.label,
+    required this.score,
+    required this.xMin,
+    required this.yMin,
+    required this.xMax,
+    required this.yMax,
+  });
+}
+
 /// OnDeviceObstacleDetector: 100% Offline, High-Speed Edge Neural Obstacle Detection Engine.
 /// 
-/// Runs directly on device CPU/NPU with multi-threading and background isolate preprocessing.
+/// Runs directly on device CPU/NPU with multi-threading and background isolate letterboxing.
 /// Zero lag, zero UI stutter, and calibrated metric distance estimation.
 class OnDeviceObstacleDetector {
   static final OnDeviceObstacleDetector _instance =
@@ -82,10 +154,9 @@ class OnDeviceObstacleDetector {
   bool _isProcessing = false;
   bool _isEnabled = true;
 
-  // Calibrated focal length for smartphone wide-angle lenses (~68° HFOV at 720p/480p)
-  static const double _focalLengthPx = 520.0;
-  static const int _inputSize = 320;
-  static const double _confidenceThreshold = 0.28;
+  // Calibrated focal length ratio for mobile smartphone cameras (~68° vertical FOV)
+  static const double _focalLengthRatio = 1.15;
+  static const double _confidenceThreshold = 0.25;
   static const double _iouThreshold = 0.45;
 
   // Real-world physical dimensions (Height, Width in meters, AudioPriority, Spoken Name)
@@ -230,8 +301,8 @@ class OnDeviceObstacleDetector {
       final List<DetectedObstacle> obstacles = [];
 
       if (_interpreter != null) {
-        // 1. Asynchronously decode and aspect-fit frame in background isolate (Zero UI Block)
-        final input = await compute(_isolatePreprocessFrame, jpegBytes);
+        // 1. Asynchronously letterbox and normalize frame in background isolate (Zero UI Block)
+        final preprocessed = await compute(_isolateLetterboxPreprocess, jpegBytes);
 
         // 2. Prepare output tensor: YOLOv8 320x320 outputs [1, 84, 2100]
         final numClasses = _labels.isNotEmpty ? _labels.length : 80;
@@ -245,10 +316,19 @@ class OnDeviceObstacleDetector {
         );
 
         // 3. Run native neural inference
-        _interpreter!.run(input, output);
+        _interpreter!.run(preprocessed.tensor, output);
 
-        // 4. Parse bounding boxes and confidence scores
-        final candidates = _parseYoloOutput(output[0], numClasses, numPredictions);
+        // 4. Parse bounding boxes and confidence scores with accurate letterbox unmapping
+        final candidates = _parseYoloOutput(
+          output[0],
+          numClasses,
+          numPredictions,
+          preprocessed.scale,
+          preprocessed.padX,
+          preprocessed.padY,
+          preprocessed.scaledW,
+          preprocessed.scaledH,
+        );
 
         // 5. Non-Maximum Suppression (NMS)
         final filtered = _applyNms(candidates, _iouThreshold);
@@ -259,28 +339,28 @@ class OnDeviceObstacleDetector {
           final prior = _getPriorForLabel(label);
 
           final bboxH = cand.yMax - cand.yMin;
-          final bboxHeightPx = math.max(bboxH * 720.0, 24.0);
+          final normalizedHeight = bboxH.clamp(0.05, 1.0);
 
           // Calibrated pinhole distance estimation
-          double rawDistance = (_focalLengthPx * prior.realHeightMeters) / bboxHeightPx;
+          double rawDistance = (_focalLengthRatio * prior.realHeightMeters) / normalizedHeight;
 
-          // Pitch Angle Compensation (Accelerometer sensor fusion)
+          // Pitch Angle Compensation (Accelerometer ground-plane sensor fusion)
           if (devicePitchDeg.abs() > 3.0) {
             final double pitchRad = (devicePitchDeg * math.pi) / 180.0;
-            const double cameraHeightMeters = 1.35; // Standard chest/handheld carrying height
+            const double cameraHeightMeters = 1.35; // Standard handheld/chest carrying height
             final double yBottomNorm = cand.yMax;
-            final double verticalAngleRad = pitchRad + (yBottomNorm - 0.5) * 0.75;
+            final double verticalAngleRad = pitchRad + (yBottomNorm - 0.5) * 0.95;
             
-            if (verticalAngleRad > 0.10) {
+            if (verticalAngleRad > 0.12) {
               final double groundPlaneDist = cameraHeightMeters / math.tan(verticalAngleRad);
-              if (groundPlaneDist > 0.3 && groundPlaneDist < 7.0) {
-                rawDistance = (rawDistance * 0.60) + (groundPlaneDist * 0.40);
+              if (groundPlaneDist > 0.3 && groundPlaneDist < 8.0) {
+                rawDistance = (rawDistance * 0.65) + (groundPlaneDist * 0.35);
               }
             }
           }
 
           final distanceMeters = double.parse(
-            rawDistance.clamp(0.3, 7.0).toStringAsFixed(1),
+            rawDistance.clamp(0.3, 7.5).toStringAsFixed(1),
           );
 
           // 12-Hour Spatial Clock Position
@@ -292,9 +372,9 @@ class OnDeviceObstacleDetector {
 
           // Priority determination
           AudioPriority priority;
-          if (distanceMeters < 1.2 || prior.defaultPriority == AudioPriority.level0Critical) {
+          if (distanceMeters < 1.3 || prior.defaultPriority == AudioPriority.level0Critical) {
             priority = AudioPriority.level0Critical;
-          } else if (distanceMeters < 2.2 || prior.defaultPriority == AudioPriority.level1Safety) {
+          } else if (distanceMeters < 2.5 || prior.defaultPriority == AudioPriority.level1Safety) {
             priority = AudioPriority.level1Safety;
           } else {
             priority = prior.defaultPriority;
@@ -353,11 +433,16 @@ class OnDeviceObstacleDetector {
     }
   }
 
-  /// Parse YOLOv8 raw prediction matrices [84, 2100]
+  /// Parse YOLOv8 raw prediction matrices [84, 2100] with exact letterbox coordinate unmapping
   List<_DetectionCandidate> _parseYoloOutput(
     List<List<double>> raw,
     int numClasses,
     int numPredictions,
+    double scale,
+    double padX,
+    double padY,
+    double scaledW,
+    double scaledH,
   ) {
     final List<_DetectionCandidate> list = [];
 
@@ -379,20 +464,21 @@ class OnDeviceObstacleDetector {
         final w = raw[2][col];
         final h = raw[3][col];
 
-        final xMin = (cx - w / 2.0) / _inputSize;
-        final yMin = (cy - h / 2.0) / _inputSize;
-        final xMax = (cx + w / 2.0) / _inputSize;
-        final yMax = (cy + h / 2.0) / _inputSize;
+        // Unpad and scale back to exact normalized [0.0, 1.0] preview coordinates
+        final xMin = (cx - w / 2.0 - padX) / scaledW;
+        final yMin = (cy - h / 2.0 - padY) / scaledH;
+        final xMax = (cx + w / 2.0 - padX) / scaledW;
+        final yMax = (cy + h / 2.0 - padY) / scaledH;
 
         final labelName = (bestClass < _labels.length) ? _labels[bestClass] : "obstacle";
 
         list.add(_DetectionCandidate(
           label: labelName,
           score: maxScore,
-          xMin: xMin,
-          yMin: yMin,
-          xMax: xMax,
-          yMax: yMax,
+          xMin: xMin.clamp(0.0, 1.0),
+          yMin: yMin.clamp(0.0, 1.0),
+          xMax: xMax.clamp(0.0, 1.0),
+          yMax: yMax.clamp(0.0, 1.0),
         ));
       }
     }
@@ -418,10 +504,9 @@ class OnDeviceObstacleDetector {
       }
       if (shouldSelect) {
         selected.add(cand);
-        if (selected.length >= 6) break;
+        if (selected.length >= 10) break; // Limit to top 10 most prominent obstacles
       }
     }
-
     return selected;
   }
 
@@ -437,76 +522,93 @@ class OnDeviceObstacleDetector {
 
     final areaA = (a.xMax - a.xMin) * (a.yMax - a.yMin);
     final areaB = (b.xMax - b.xMin) * (b.yMax - b.yMin);
-
     final unionArea = areaA + areaB - intersectionArea;
+
     if (unionArea <= 0.0) return 0.0;
     return intersectionArea / unionArea;
   }
 
   _ObjectPrior _getPriorForLabel(String label) {
-    final clean = label.toLowerCase().trim();
-    if (_priors.containsKey(clean)) return _priors[clean]!;
-
-    for (final entry in _priors.entries) {
-      if (clean.contains(entry.key) || entry.key.contains(clean)) {
-        return entry.value;
-      }
+    final lower = label.toLowerCase();
+    if (_priors.containsKey(lower)) {
+      return _priors[lower]!;
     }
-
-    return const _ObjectPrior(1.0, 0.6, AudioPriority.level1Safety, "Obstacle");
+    // Generic default for unlisted COCO classes
+    final capitalized = lower.isNotEmpty
+        ? "${lower[0].toUpperCase()}${lower.substring(1)}"
+        : "Obstacle";
+    return _ObjectPrior(1.0, 0.6, AudioPriority.level1Safety, capitalized);
   }
 
   String _calculateClockPosition(double normCenterX) {
-    if (normCenterX < 0.20) return "9 o'clock";
-    if (normCenterX < 0.35) return "10 o'clock";
-    if (normCenterX < 0.44) return "11 o'clock";
-    if (normCenterX <= 0.56) return "12 o'clock";
-    if (normCenterX <= 0.65) return "1 o'clock";
-    if (normCenterX <= 0.80) return "2 o'clock";
-    return "3 o'clock";
+    if (normCenterX < 0.25) return "10 o'clock";
+    if (normCenterX < 0.40) return "11 o'clock";
+    if (normCenterX <= 0.60) return "12 o'clock";
+    if (normCenterX <= 0.75) return "1 o'clock";
+    return "2 o'clock";
   }
 
-  void _enforceSpeechGovernance(OnlineDetectionCycleResult result) {
-    final hazard = result.highestHazard;
+  /// Strict Voice Governance: Speaks obstacles once with debouncing and clearance notifications
+  void _enforceSpeechGovernance(OnlineDetectionCycleResult cycle) {
     final now = DateTime.now();
 
-    if (hazard != null && hazard.label != "Path Clear") {
-      final labelKey = "${hazard.label.toLowerCase().trim()}_${hazard.clockPosition.toLowerCase().trim()}";
-      final lastSpoken = _announcedObstacles[labelKey];
-      final lastDist = _announcedDistances[labelKey] ?? 99.0;
-
-      final deltaDist = (lastDist - hazard.distanceMeters).abs();
-      final hasMovedSignificantly = deltaDist >= 0.6;
-      final isStale = lastSpoken == null || now.difference(lastSpoken).inSeconds >= 4;
-
-      if (isStale || hasMovedSignificantly) {
-        _announcedObstacles[labelKey] = now;
-        _announcedDistances[labelKey] = hazard.distanceMeters;
-        _wasHazardSpoken = true;
-
-        AudioMutexController().speak(
-          text: hazard.speechAnnouncement,
-          priority: hazard.priority,
-          haptic: true,
-          force: hazard.priority == AudioPriority.level0Critical,
-        );
+    if (cycle.obstacles.isEmpty) {
+      if (_wasHazardSpoken) {
+        if (_lastClearSpokenTime == null ||
+            now.difference(_lastClearSpokenTime!).inSeconds >= 4) {
+          _lastClearSpokenTime = now;
+          _wasHazardSpoken = false;
+          _announcedObstacles.clear();
+          _announcedDistances.clear();
+          AudioMutexController().notifyHazardCleared();
+          AudioMutexController().speak(
+            text: "Path clear. Continuing forward.",
+            priority: AudioPriority.level2Navigation,
+            haptic: false,
+          );
+        }
       }
-    } else if (result.obstacles.isEmpty && _wasHazardSpoken) {
-      final canAnnounceClear = _lastClearSpokenTime == null ||
-          now.difference(_lastClearSpokenTime!).inSeconds >= 6;
+      return;
+    }
 
-      if (canAnnounceClear) {
-        _lastClearSpokenTime = now;
-        _wasHazardSpoken = false;
-        _announcedObstacles.clear();
-        _announcedDistances.clear();
+    final topHazard = cycle.highestHazard ?? cycle.obstacles.first;
+    final key = "${topHazard.label}_${topHazard.clockPosition}";
+    final lastSpoken = _announcedObstacles[key];
+    final lastDist = _announcedDistances[key];
 
-        AudioMutexController().speak(
-          text: "Path clear.",
-          priority: AudioPriority.level3Context,
-          haptic: false,
-        );
+    bool shouldSpeak = false;
+
+    if (lastSpoken == null) {
+      shouldSpeak = true;
+    } else {
+      final elapsedSec = now.difference(lastSpoken).inSeconds;
+      final distDelta = (lastDist != null) ? (lastDist - topHazard.distanceMeters).abs() : 99.0;
+
+      // Speak again if moved significantly closer (>= 0.8m) or cooldown expired (5s)
+      if (topHazard.priority == AudioPriority.level0Critical && (elapsedSec >= 2 || distDelta >= 0.6)) {
+        shouldSpeak = true;
+      } else if (topHazard.priority == AudioPriority.level1Safety && (elapsedSec >= 4 || distDelta >= 0.9)) {
+        shouldSpeak = true;
+      } else if (elapsedSec >= 8) {
+        shouldSpeak = true;
       }
+    }
+
+    if (shouldSpeak) {
+      _announcedObstacles[key] = now;
+      _announcedDistances[key] = topHazard.distanceMeters;
+      _wasHazardSpoken = true;
+
+      final distStr = "${topHazard.distanceMeters.toStringAsFixed(1)} meters";
+      final speechText = topHazard.priority == AudioPriority.level0Critical
+          ? "Caution! ${topHazard.label} ahead at ${topHazard.clockPosition}, $distStr."
+          : "${topHazard.label} at ${topHazard.clockPosition}, $distStr.";
+
+      AudioMutexController().speak(
+        text: speechText,
+        priority: topHazard.priority,
+        haptic: topHazard.priority == AudioPriority.level0Critical,
+      );
     }
   }
 
@@ -514,22 +616,4 @@ class OnDeviceObstacleDetector {
     _interpreter?.close();
     _resultsController.close();
   }
-}
-
-class _DetectionCandidate {
-  final String label;
-  final double score;
-  final double xMin;
-  final double yMin;
-  final double xMax;
-  final double yMax;
-
-  _DetectionCandidate({
-    required this.label,
-    required this.score,
-    required this.xMin,
-    required this.yMin,
-    required this.xMax,
-    required this.yMax,
-  });
 }

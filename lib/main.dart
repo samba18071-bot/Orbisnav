@@ -7,10 +7,8 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'controllers/audio_mutex_controller.dart';
 import 'services/online_obstacle_detector.dart';
 import 'services/on_device_obstacle_detector.dart';
-import 'services/online_vision_stream.dart';
 import 'services/kinematic_motion_tracker.dart';
 import 'services/cloud_ai_vision_service.dart';
-import 'models/navigation_destination.dart';
 import 'services/nameboard_navigation_service.dart';
 
 List<CameraDescription> _cameras = [];
@@ -67,7 +65,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   CameraController? _cameraController;
   bool _isCameraInitialized = false;
   StreamSubscription<AccelerometerEvent>? _sensorSubscription;
-  StreamSubscription<OnlineDetectionCycleResult>? _detectionSubscription;
+  StreamSubscription<OnlineDetectionCycleResult>? _onDeviceSubscription;
   StreamSubscription<AudioRequest?>? _speechSubscription;
 
   // Real-time Sensors & Telemetry
@@ -82,35 +80,34 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
 
   // Audio / Speech State (Governed by AudioMutexController)
   final AudioMutexController _audioMutex = AudioMutexController();
-  final OnlineVisionStream _visionStream = OnlineVisionStream();
   final OnDeviceObstacleDetector _onDeviceDetector = OnDeviceObstacleDetector();
   final CloudAIVisionService _cloudAiService = CloudAIVisionService();
   String _activeSpeech = "AI-Eyes Vision Ready. Path Clear.";
   bool _isSpeaking = false;
   String _lastHaptic = "Dual 50ms Pulse (Boot)";
 
-  // Vision State (Hybrid: High-Speed On-Device ML Edge Engine + Cloud Fallback)
-  bool _isOnlineVisionActive = true;
-  bool _isCapturingOnlineFrame = false;
-  int _cloudLatencyMs = 45;
-  String _cloudStatus = "Standalone On-Device ML (Offline Ready)";
+  // Vision State (100% Standalone On-Device Edge Inference Engine)
+  bool _isVisionActive = true;
+  bool _isProcessingFrame = false;
+  int _inferenceLatencyMs = 38;
+  String _visionStatus = "Standalone Edge AI: Ready";
   List<DetectedObstacle> _activeObstacles = [];
   DetectedObstacle? _primaryHazard;
-  Timer? _onlineStreamTimer;
-  StreamSubscription<OnlineDetectionCycleResult>? _onDeviceSubscription;
+  Timer? _visionStreamTimer;
 
   // Multimodal AI Scene Comprehension State
   SceneAnalysisResult _latestSceneAnalysis = SceneAnalysisResult.empty();
   StreamSubscription<SceneAnalysisResult>? _sceneAnalysisSubscription;
 
-  // Destination & Landmark Nameboard Navigation
+  // Destination & Landmark Nameboard Navigation (4km Radius Discovery)
   final NameboardNavigationService _navService = NameboardNavigationService();
   StreamSubscription<NavigationStatusState>? _navSubscription;
   NavigationStatusState? _navState;
   final TextEditingController _destinationInputController = TextEditingController();
+  String _selectedCategoryFilter = "All";
 
   // System States
-  final double _tempC = 37.4;
+  final double _tempC = 37.2;
   final int _battery = 100;
 
   @override
@@ -136,30 +133,17 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     // 2. Initialize Edge-Native On-Device ML Engine (100% Offline, no Mac/server required)
     await _onDeviceDetector.initialize();
     _onDeviceSubscription = _onDeviceDetector.resultsStream.listen((result) {
-      if (mounted && !_visionStream.isConnected) {
+      if (mounted) {
         setState(() {
-          _cloudLatencyMs = result.latencyMs;
-          _cloudStatus = result.statusMessage;
+          _inferenceLatencyMs = result.latencyMs;
+          _visionStatus = result.statusMessage;
           _activeObstacles = result.obstacles;
           _primaryHazard = result.highestHazard;
         });
       }
     });
 
-    // 3. Connect and Listen to Cloud/Local Vision Stream (if server is reachable)
-    await _visionStream.connect();
-    _detectionSubscription = _visionStream.resultsStream.listen((result) {
-      if (mounted && _visionStream.isConnected) {
-        setState(() {
-          _cloudLatencyMs = result.latencyMs;
-          _cloudStatus = result.statusMessage;
-          _activeObstacles = result.obstacles;
-          _primaryHazard = result.highestHazard;
-        });
-      }
-    });
-
-    // 4. Listen to Online Multimodal AI Scene Analysis Stream
+    // 3. Listen to Online Multimodal AI Scene Analysis Stream
     _sceneAnalysisSubscription = _cloudAiService.sceneStream.listen((scene) {
       if (mounted) {
         setState(() {
@@ -168,7 +152,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       }
     });
 
-    // 5. Listen to Destination & Board Navigation Status
+    // 4. Listen to Destination & 4km GPS Navigation Status
     _navSubscription = _navService.statusStream.listen((state) {
       if (mounted) {
         setState(() {
@@ -177,6 +161,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       }
     });
 
+    // 5. Initialize GPS & 4km Radius POI Discovery
+    await _navService.initializeGpsAndNearby();
+
     // 6. Initialize CameraX with Portrait orientation
     await _initCamera();
 
@@ -184,7 +171,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     _startSensorStream();
 
     // 8. Start real-time obstacle detection streaming loop
-    _startOnlineVisionStream();
+    _startVisionStream();
 
     // Initial voice greeting
     _audioMutex.speak(
@@ -207,7 +194,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
 
       try {
         await _cameraController!.initialize();
-        // Lock capture orientation to portrait
         await _cameraController!.lockCaptureOrientation(DeviceOrientation.portraitUp);
         if (mounted) {
           setState(() {
@@ -238,7 +224,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       }
       _lastAccelMagnitude = magnitude;
 
-      // Downward pitch prompt (severe downward pitch > 45° looking at shoes) - Tell Only Once with 60s cooldown
+      // Downward pitch prompt (severe downward pitch > 45° looking at shoes) - 60s cooldown
       if (pitchDeg < -45.0) {
         final nowTime = DateTime.now();
         if (_lastTiltWarningTime == null || nowTime.difference(_lastTiltWarningTime!).inSeconds >= 60) {
@@ -268,50 +254,41 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     HapticFeedback.lightImpact();
   }
 
-  /// Real-time streaming loop: captures frames and executes
-  /// high-concurrency cloud obstacle detection via WebSocket / HTTP.
-  void _startOnlineVisionStream() {
-    _onlineStreamTimer?.cancel();
-    _onlineStreamTimer = Timer.periodic(const Duration(milliseconds: 700), (_) {
-      if (_isOnlineVisionActive &&
+  /// High-efficiency detection loop: runs asynchronously without locking the UI
+  void _startVisionStream() {
+    _visionStreamTimer?.cancel();
+    _visionStreamTimer = Timer.periodic(const Duration(milliseconds: 320), (_) {
+      if (_isVisionActive &&
           _isCameraInitialized &&
-          !_isCapturingOnlineFrame &&
+          !_isProcessingFrame &&
           _cameraController != null &&
           _cameraController!.value.isInitialized &&
           !_cameraController!.value.isTakingPicture) {
-        _captureAndAnalyzeCloudFrame();
+        _processFrame();
       }
     });
   }
 
-  Future<void> _captureAndAnalyzeCloudFrame() async {
+  Future<void> _processFrame() async {
     if (_cameraController == null ||
         !_cameraController!.value.isInitialized ||
         _cameraController!.value.isTakingPicture ||
-        _isCapturingOnlineFrame) {
+        _isProcessingFrame) {
       return;
     }
 
-    _isCapturingOnlineFrame = true;
+    _isProcessingFrame = true;
     try {
       final image = await _cameraController!.takePicture();
       final bytes = await image.readAsBytes();
 
-      if (_visionStream.isConnected) {
-        // Fast Cloud / Local Server Stream
-        await _visionStream.sendFrameBytes(
-          bytes,
-          devicePitchDeg: _pitchDeg,
-        );
-      } else {
-        // 100% Standalone On-Device ML Edge Inference (Zero Mac / Zero Internet required)
-        await _onDeviceDetector.processFrameBytes(
-          bytes,
-          devicePitchDeg: _pitchDeg,
-        );
-      }
+      // 100% Standalone On-Device Neural Vision Engine
+      await _onDeviceDetector.processFrameBytes(
+        bytes,
+        devicePitchDeg: _pitchDeg,
+      );
 
-      // Real-Time Situation & Scene Understanding
+      // Real-Time Situation & Scene Understanding (Edge + Cloud Fallback)
       if (_cloudAiService.isAutoAnalyzeEnabled) {
         _cloudAiService.analyzeScene(
           bytes,
@@ -325,9 +302,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         await _navService.processCameraSnapshot(bytes);
       }
     } catch (e) {
-      debugPrint("Frame capture error: $e");
+      debugPrint("Frame processing error: $e");
     } finally {
-      _isCapturingOnlineFrame = false;
+      _isProcessingFrame = false;
     }
   }
 
@@ -337,6 +314,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       _activeObstacles = [];
       _lastHaptic = "Silent";
     });
+    _onDeviceDetector.forceRescan();
     _audioMutex.notifyHazardCleared();
     _audioMutex.speak(
       text: "Path clear. Continuing forward.",
@@ -348,9 +326,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _onlineStreamTimer?.cancel();
+    _visionStreamTimer?.cancel();
     _sensorSubscription?.cancel();
-    _detectionSubscription?.cancel();
     _onDeviceSubscription?.cancel();
     _sceneAnalysisSubscription?.cancel();
     _onDeviceDetector.dispose();
@@ -389,7 +366,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             const SizedBox(width: 8),
             const Flexible(
               child: Text(
-                "Online Vision",
+                "Edge Vision & 4km GPS",
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
               ),
@@ -402,21 +379,21 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               margin: const EdgeInsets.only(right: 12),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: _isOnlineVisionActive ? const Color(0xFF76FF03).withValues(alpha: 0.15) : Colors.grey.withValues(alpha: 0.2),
+                color: _isVisionActive ? const Color(0xFF76FF03).withValues(alpha: 0.15) : Colors.grey.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: _isOnlineVisionActive ? const Color(0xFF76FF03) : Colors.grey),
+                border: Border.all(color: _isVisionActive ? const Color(0xFF76FF03) : Colors.grey),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.cloud_done, size: 12, color: _isOnlineVisionActive ? const Color(0xFF76FF03) : Colors.grey),
-                  const SizedBox(width: 5),
+                  Icon(Icons.bolt, size: 13, color: _isVisionActive ? const Color(0xFF76FF03) : Colors.grey),
+                  const SizedBox(width: 4),
                   Text(
-                    _isOnlineVisionActive ? "ONLINE (${_cloudLatencyMs}ms)" : "PAUSED",
+                    _isVisionActive ? "ON-DEVICE (${_inferenceLatencyMs}ms)" : "PAUSED",
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
-                      color: _isOnlineVisionActive ? const Color(0xFF76FF03) : Colors.grey,
+                      color: _isVisionActive ? const Color(0xFF76FF03) : Colors.grey,
                     ),
                   ),
                 ],
@@ -430,35 +407,35 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 1. Top Real-time Internet & System Telemetry
+            // 1. Real-time Hardware & Telemetry Bar
             _buildTelemetryBar(),
             const SizedBox(height: 14),
 
-            // 2. Portrait Camera Viewfinder with Live Online Obstacle Bounding Boxes
+            // 2. Portrait Camera Viewfinder with Live Real-World Bounding Boxes
             _buildPortraitCameraViewfinder(hasCriticalHazard),
             const SizedBox(height: 14),
 
-            // 3. Online Cloud Vision Status & Detected Obstacle Banner
-            _buildOnlineObstacleCard(hasCriticalHazard),
+            // 3. On-Device Obstacle Detection Status & Hazard List
+            _buildObstacleDetectionCard(hasCriticalHazard),
             const SizedBox(height: 14),
 
-            // 3b. Multimodal Generative AI Scene Understanding & Detailed Object Analysis
+            // 4. Multimodal AI Situation & Scene Analyzer
             _buildSceneComprehensionCard(),
             const SizedBox(height: 14),
 
-            // 4. Destination & Landmark Nameboard Navigation
-            _buildLandmarkNavigationCard(),
+            // 5. GPS Nearby Destinations & POIs (4km Radius Explorer)
+            _build4kmNearbyDestinationsCard(),
             const SizedBox(height: 14),
 
-            // 5. 12-Hour Clock Navigation Radar
+            // 6. 12-Hour Spatial Navigation Radar & PDR Tracking
             _buildNavigationRadar(),
             const SizedBox(height: 14),
 
-            // 5. Audio Mutex & Speech State
+            // 7. Audio Mutex Speech & Voice State
             _buildAudioStatusCard(hasCriticalHazard),
             const SizedBox(height: 14),
 
-            // 6. Interactive Testing & Real-Time Controls
+            // 8. Interactive Testing & Control Bar
             _buildControlBar(),
             const SizedBox(height: 24),
           ],
@@ -481,8 +458,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         alignment: WrapAlignment.spaceAround,
         children: [
           _buildStat("MODE", "Portrait Live", Icons.screen_lock_portrait, const Color(0xFF00E5FF)),
-          _buildStat("INFERENCE", "Internet / Cloud", Icons.cloud_outlined, const Color(0xFF76FF03)),
-          _buildStat("LATENCY", "${_cloudLatencyMs}ms", Icons.speed, const Color(0xFF00E5FF)),
+          _buildStat("ENGINE", "100% On-Device", Icons.memory, const Color(0xFF76FF03)),
+          _buildStat("LATENCY", "${_inferenceLatencyMs}ms", Icons.speed, const Color(0xFF00E5FF)),
+          _buildStat("GPS FIX", _navService.hasRealGpsFix ? "Active GPS" : "Sensor Nav", Icons.location_on, _navService.hasRealGpsFix ? const Color(0xFF76FF03) : Colors.orangeAccent),
           _buildStat("SOC TEMP", "${_tempC.toStringAsFixed(1)}°C", Icons.thermostat, const Color(0xFF76FF03)),
           _buildStat("BATTERY", "$_battery%", Icons.battery_charging_full, Colors.greenAccent),
         ],
@@ -509,129 +487,78 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   }
 
   Widget _buildPortraitCameraViewfinder(bool hasCriticalHazard) {
-    return Container(
-      height: 380,
-      decoration: BoxDecoration(
-        color: const Color(0xFF0E1420),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: hasCriticalHazard ? const Color(0xFFFF1744) : const Color(0xFF00E5FF).withValues(alpha: 0.4),
-          width: hasCriticalHazard ? 2.5 : 1.2,
-        ),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(15),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Live Portrait Camera Stream
-            if (_isCameraInitialized && _cameraController != null)
-              CameraPreview(_cameraController!)
-            else
-              Container(
-                color: Colors.black,
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.camera_alt, size: 48, color: Colors.white.withValues(alpha: 0.2)),
-                      const SizedBox(height: 8),
-                      const Text(
-                        "Connecting Portrait Camera Stream...",
-                        style: TextStyle(fontSize: 12, color: Colors.white54),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final boxWidth = constraints.maxWidth;
+        const boxHeight = 380.0;
+
+        return Container(
+          height: boxHeight,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0E1420),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: hasCriticalHazard ? const Color(0xFFFF1744) : const Color(0xFF00E5FF).withValues(alpha: 0.4),
+              width: hasCriticalHazard ? 2.5 : 1.2,
+            ),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(15),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // Live Portrait Camera Stream
+                if (_isCameraInitialized && _cameraController != null)
+                  CameraPreview(_cameraController!)
+                else
+                  Container(
+                    color: Colors.black,
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.camera_alt, size: 48, color: Colors.white.withValues(alpha: 0.2)),
+                          const SizedBox(height: 8),
+                          const Text(
+                            "Connecting Portrait Camera Stream...",
+                            style: TextStyle(fontSize: 12, color: Colors.white54),
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
+                  ),
+
+                // Center Focus Reticle
+                Center(
+                  child: Icon(
+                    Icons.filter_center_focus,
+                    size: 70,
+                    color: hasCriticalHazard ? const Color(0xFFFF1744).withValues(alpha: 0.4) : Colors.cyanAccent.withValues(alpha: 0.20),
                   ),
                 ),
-              ),
 
-            // Reticle / Visual Focus in Center
-            Center(
-              child: Icon(
-                Icons.filter_center_focus,
-                size: 80,
-                color: hasCriticalHazard ? const Color(0xFFFF1744).withValues(alpha: 0.4) : Colors.cyanAccent.withValues(alpha: 0.25),
-              ),
-            ),
-
-            // Top Status Overlay
-            Positioned(
-              top: 10,
-              left: 12,
-              right: 12,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.7),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.portrait, size: 12, color: Color(0xFF00E5FF)),
-                        const SizedBox(width: 4),
-                        const Text("PORTRAIT VIEW", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: hasCriticalHazard ? Colors.red.withValues(alpha: 0.85) : Colors.green.withValues(alpha: 0.7),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      hasCriticalHazard ? "HAZARD DETECTED" : "PATH CLEAR",
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            // Render Target Nameboard Reticle if sighted
-            if (_navService.targetBoard != null)
-              Positioned(
-                top: 48,
-                left: 14,
-                right: 14,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF00E676).withValues(alpha: 0.22),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: const Color(0xFF00E676), width: 2.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF00E676).withValues(alpha: 0.35),
-                        blurRadius: 10,
-                        spreadRadius: 2,
-                      ),
-                    ],
-                  ),
+                // Top Viewfinder Header
+                Positioned(
+                  top: 10,
+                  left: 12,
+                  right: 12,
                   child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Icon(Icons.storefront, color: Color(0xFF00E676), size: 26),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            const Icon(Icons.portrait, size: 12, color: Color(0xFF00E5FF)),
+                            const SizedBox(width: 4),
                             Text(
-                              "TARGET NAMEBOARD SIGHTED (${(_navService.targetBoard!.confidence * 100).toInt()}% CONF)",
-                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF00E676), letterSpacing: 1.1),
-                            ),
-                            Text(
-                              _navService.targetBoard!.text,
-                              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
-                            ),
-                            Text(
-                              "Vector: ${_navService.targetBoard!.clockZone} • Dist: ${_navService.targetBoard!.distanceMeters.toStringAsFixed(1)}m",
-                              style: const TextStyle(fontSize: 11, color: Colors.white70),
+                              "PORTRAIT • ${_activeObstacles.length} OBJECTS",
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
                             ),
                           ],
                         ),
@@ -639,102 +566,153 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF00E676),
+                          color: hasCriticalHazard ? Colors.red.withValues(alpha: 0.85) : Colors.green.withValues(alpha: 0.75),
                           borderRadius: BorderRadius.circular(6),
                         ),
-                        child: const Text(
-                          "LOCKED",
-                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black),
+                        child: Text(
+                          hasCriticalHazard ? "HAZARD DETECTED" : "PATH CLEAR",
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
                         ),
                       ),
                     ],
                   ),
                 ),
-              ),
 
-            // Render Live Cloud-Detected Obstacle Bounding Boxes
-            if (_primaryHazard != null)
-              Align(
-                alignment: Alignment.center,
-                child: Container(
-                  width: 170,
-                  height: 190,
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: _primaryHazard!.isHazard ? const Color(0xFFFF1744) : const Color(0xFF00E5FF),
-                      width: 3,
-                    ),
-                    color: (_primaryHazard!.isHazard ? const Color(0xFFFF1744) : const Color(0xFF00E5FF)).withValues(alpha: 0.18),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          color: _primaryHazard!.isHazard ? const Color(0xFFFF1744) : const Color(0xFF00E5FF),
-                          child: Text(
-                            "${_primaryHazard!.label.toUpperCase()} ${(_primaryHazard!.confidence * 100).toInt()}%",
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              color: _primaryHazard!.isHazard ? Colors.white : Colors.black,
+                // Dynamic Live Bounding Boxes for ALL detected obstacles
+                ..._activeObstacles.map((obs) {
+                  final left = (obs.xMin * boxWidth).clamp(0.0, boxWidth - 40.0);
+                  final top = (obs.yMin * boxHeight).clamp(0.0, boxHeight - 30.0);
+                  final width = ((obs.xMax - obs.xMin) * boxWidth).clamp(40.0, boxWidth);
+                  final height = ((obs.yMax - obs.yMin) * boxHeight).clamp(30.0, boxHeight);
+                  final color = obs.isHazard ? const Color(0xFFFF1744) : const Color(0xFF00E5FF);
+
+                  return Positioned(
+                    left: left,
+                    top: top,
+                    width: width,
+                    height: height,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: color, width: 2.2),
+                        color: color.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                            color: color,
+                            child: Text(
+                              "${obs.label.toUpperCase()} ${(obs.confidence * 100).toInt()}% • ${obs.distanceMeters.toStringAsFixed(1)}m (${obs.clockPosition})",
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                                color: obs.isHazard ? Colors.white : Colors.black,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                        ),
-                        const Spacer(),
-                        Text(
-                          "Dist: ${_primaryHazard!.distanceMeters.toStringAsFixed(1)}m",
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
-                        ),
-                        Text(
-                          "TTC: ${_primaryHazard!.ttcSeconds.toStringAsFixed(1)}s",
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.amber),
-                        ),
-                        Text(
-                          "Vector: ${_primaryHazard!.clockPosition}",
-                          style: const TextStyle(fontSize: 11, color: Colors.white70),
-                        ),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+
+                // Sighted Destination Nameboard Reticle
+                if (_navService.targetBoard != null)
+                  Positioned(
+                    top: 48,
+                    left: 14,
+                    right: 14,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00E676).withValues(alpha: 0.22),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFF00E676), width: 2.5),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF00E676).withValues(alpha: 0.35),
+                            blurRadius: 10,
+                            spreadRadius: 2,
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.storefront, color: Color(0xFF00E676), size: 26),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  "TARGET NAMEBOARD SIGHTED (${(_navService.targetBoard!.confidence * 100).toInt()}% CONF)",
+                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF00E676), letterSpacing: 1.1),
+                                ),
+                                Text(
+                                  _navService.targetBoard!.text,
+                                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                                ),
+                                Text(
+                                  "Vector: ${_navService.targetBoard!.clockZone} • Dist: ${_navService.targetBoard!.distanceMeters.toStringAsFixed(1)}m",
+                                  style: const TextStyle(fontSize: 11, color: Colors.white70),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF00E676),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text(
+                              "LOCKED",
+                              style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                // Bottom IMU Telemetry
+                Positioned(
+                  bottom: 10,
+                  left: 10,
+                  right: 10,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.75),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.white10),
+                    ),
+                    child: Wrap(
+                      spacing: 12,
+                      runSpacing: 4,
+                      alignment: WrapAlignment.spaceBetween,
+                      children: [
+                        Text("Pitch: ${_pitchDeg.toStringAsFixed(1)}°", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _pitchDeg < -30 ? Colors.orange : Colors.white)),
+                        Text("Roll: ${_rollDeg.toStringAsFixed(1)}°", style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                        Text("Latency: ${_inferenceLatencyMs}ms", style: const TextStyle(fontSize: 11, color: Color(0xFF00E5FF))),
+                        Text("Haptic: $_lastHaptic", style: const TextStyle(fontSize: 11, color: Color(0xFF76FF03))),
                       ],
                     ),
                   ),
-                ),
-              ),
-
-            // Bottom IMU Telemetry
-            Positioned(
-              bottom: 10,
-              left: 10,
-              right: 10,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.75),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.white10),
-                ),
-                child: Wrap(
-                  spacing: 12,
-                  runSpacing: 4,
-                  alignment: WrapAlignment.spaceBetween,
-                  children: [
-                    Text("Pitch: ${_pitchDeg.toStringAsFixed(1)}°", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _pitchDeg < -30 ? Colors.orange : Colors.white)),
-                    Text("Roll: ${_rollDeg.toStringAsFixed(1)}°", style: const TextStyle(fontSize: 11, color: Colors.white70)),
-                    Text("Cloud Latency: ${_cloudLatencyMs}ms", style: const TextStyle(fontSize: 11, color: Color(0xFF00E5FF))),
-                    Text("Haptic: $_lastHaptic", style: const TextStyle(fontSize: 11, color: Color(0xFF76FF03))),
-                  ],
-                ),
-              ),
-            )
-          ],
-        ),
-      ),
+                )
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
-  Widget _buildOnlineObstacleCard(bool hasCriticalHazard) {
+  Widget _buildObstacleDetectionCard(bool hasCriticalHazard) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -752,25 +730,26 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             children: [
               const Row(
                 children: [
-                  Icon(Icons.wifi, color: Color(0xFF00E5FF), size: 18),
+                  Icon(Icons.remove_red_eye_outlined, color: Color(0xFF00E5FF), size: 18),
                   SizedBox(width: 8),
                   Text(
-                    "REAL-TIME INTERNET DETECTION",
+                    "ON-DEVICE NEURAL VISION",
                     style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1),
                   ),
                 ],
               ),
               Switch(
-                value: _isOnlineVisionActive,
+                value: _isVisionActive,
                 activeThumbColor: const Color(0xFF76FF03),
                 onChanged: (val) {
                   setState(() {
-                    _isOnlineVisionActive = val;
+                    _isVisionActive = val;
                   });
+                  _onDeviceDetector.setEnabled(val);
                   if (val) {
-                    _startOnlineVisionStream();
+                    _startVisionStream();
                   } else {
-                    _onlineStreamTimer?.cancel();
+                    _visionStreamTimer?.cancel();
                   }
                 },
               )
@@ -778,7 +757,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           ),
           const SizedBox(height: 6),
           Text(
-            _cloudStatus,
+            _visionStatus,
             style: const TextStyle(fontSize: 12, color: Colors.white70),
           ),
           if (_activeObstacles.isNotEmpty) ...[
@@ -811,7 +790,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          "${obs.detailedDescription.isNotEmpty ? obs.detailedDescription : obs.label} (${obs.clockPosition})",
+                          "${obs.label} (${obs.clockPosition})",
                           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
                         ),
                         Text(
@@ -874,7 +853,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
-                  hasInternet ? (isAnalyzing ? "ANALYZING..." : "GEMINI CLOUD") : "STANDALONE EDGE",
+                  hasInternet ? (isAnalyzing ? "ANALYZING..." : "GEMINI 2.0") : "STANDALONE EDGE",
                   style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
                 ),
               )
@@ -1007,10 +986,13 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     );
   }
 
-  Widget _buildLandmarkNavigationCard() {
+  /// 4km Radius Nearby Destinations & Live Geolocation Explorer
+  Widget _build4kmNearbyDestinationsCard() {
     final isNavigating = _navService.isNavigating;
     final navState = _navState;
     final dest = _navService.activeDestination;
+    final places = _navService.nearbyPlaces;
+    final isLoading = _navService.isLoadingNearby;
 
     Color phaseColor;
     String phaseTitle;
@@ -1044,6 +1026,17 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         break;
     }
 
+    // Filter places by selected category and search text
+    final queryText = _destinationInputController.text.trim().toLowerCase();
+    final filteredPlaces = places.where((p) {
+      final matchesCategory = _selectedCategoryFilter == "All" || p.category == _selectedCategoryFilter;
+      final matchesQuery = queryText.isEmpty ||
+          p.name.toLowerCase().contains(queryText) ||
+          p.category.toLowerCase().contains(queryText) ||
+          (p.address != null && p.address!.toLowerCase().contains(queryText));
+      return matchesCategory && matchesQuery;
+    }).toList();
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1068,7 +1061,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                     const SizedBox(width: 8),
                     const Flexible(
                       child: Text(
-                        "DESTINATION & BOARDS",
+                        "NEARBY DESTINATIONS (4KM RADIUS)",
                         style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.1),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -1077,23 +1070,18 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                 ),
               ),
               const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: phaseColor.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: phaseColor),
-                ),
-                child: Text(
-                  isNavigating ? "ACTIVE" : "STANDBY",
-                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: phaseColor),
-                ),
+              IconButton(
+                icon: isLoading
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00E5FF)))
+                    : const Icon(Icons.refresh, size: 18, color: Color(0xFF00E5FF)),
+                tooltip: "Refresh 4km Nearby Locations",
+                onPressed: isLoading ? null : () => _navService.fetchNearbyLocations4km(force: true),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
 
-          // Active Navigation Guidance Banner
+          // Active Turn-by-Turn Navigation Guidance Banner
           if (isNavigating && dest != null) ...[
             Container(
               padding: const EdgeInsets.all(12),
@@ -1108,9 +1096,12 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        dest.name.toUpperCase(),
-                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                      Expanded(
+                        child: Text(
+                          dest.name.toUpperCase(),
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -1132,9 +1123,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("DISTANCE & VECTOR", style: TextStyle(fontSize: 9, color: Colors.white54)),
+                            const Text("DISTANCE & BEARING", style: TextStyle(fontSize: 9, color: Colors.white54)),
                             Text(
-                              "${(navState?.distanceMeters ?? 0.0).toStringAsFixed(1)}m • ${navState?.clockDirection ?? '12 o\'clock'}",
+                              "${(navState?.distanceMeters ?? 0.0) >= 1000 ? ((navState?.distanceMeters ?? 0.0) / 1000).toStringAsFixed(1) + 'km' : (navState?.distanceMeters ?? 0.0).toStringAsFixed(0) + 'm'} • ${navState?.clockDirection ?? '12 o\'clock'}",
                               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: phaseColor),
                             ),
                           ],
@@ -1177,38 +1168,20 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                     ),
                   ],
                   const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () {
-                            _navService.simulateStepCloser(10.0);
-                          },
-                          icon: const Icon(Icons.directions_walk, size: 16),
-                          label: const Text("Walk 10m Closer", style: TextStyle(fontSize: 11)),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFF00E5FF),
-                            side: const BorderSide(color: Color(0xFF00E5FF)),
-                            padding: const EdgeInsets.symmetric(vertical: 8),
-                          ),
-                        ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        _navService.stopNavigation();
+                      },
+                      icon: const Icon(Icons.stop, size: 16),
+                      label: const Text("Stop Navigation", style: TextStyle(fontSize: 12)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red.withValues(alpha: 0.8),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 8),
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: () {
-                            _navService.stopNavigation();
-                          },
-                          icon: const Icon(Icons.stop, size: 16),
-                          label: const Text("Stop Nav", style: TextStyle(fontSize: 11)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red.withValues(alpha: 0.8),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 8),
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ],
               ),
@@ -1216,26 +1189,64 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             const SizedBox(height: 12),
           ],
 
-          // Destination Search / Quick Selector
-          const Text(
-            "SELECT DESTINATION OR SHOP:",
-            style: TextStyle(fontSize: 10, color: Colors.white54, fontWeight: FontWeight.bold),
+          // Search Input Bar
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _destinationInputController,
+                  style: const TextStyle(fontSize: 12, color: Colors.white),
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    hintText: "Search nearby pharmacy, hospital, cafe...",
+                    hintStyle: const TextStyle(fontSize: 11, color: Colors.white38),
+                    prefixIcon: const Icon(Icons.search, size: 16, color: Color(0xFF00E5FF)),
+                    filled: true,
+                    fillColor: const Color(0xFF1E293B),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
+
+          // Category Filter Chips
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
-              children: NavTargetDestination.defaultDestinations.map((d) {
-                final isSelected = dest?.id == d.id;
+              children: [
+                "All",
+                "Medical & Health",
+                "Food & Dining",
+                "Groceries & Shopping",
+                "Transit & Stations",
+                "Banks & ATMs",
+                "Landmarks & Parks",
+              ].map((cat) {
+                final isSelected = _selectedCategoryFilter == cat;
                 return Padding(
-                  padding: const EdgeInsets.only(right: 8),
+                  padding: const EdgeInsets.only(right: 6),
                   child: FilterChip(
                     selected: isSelected,
                     selectedColor: const Color(0xFF00E5FF).withValues(alpha: 0.3),
                     backgroundColor: const Color(0xFF1E293B),
-                    label: Text(d.name, style: TextStyle(fontSize: 11, color: isSelected ? const Color(0xFF00E5FF) : Colors.white)),
+                    label: Text(
+                      cat == "All" ? "All (4km)" : cat,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: isSelected ? const Color(0xFF00E5FF) : Colors.white70,
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                      ),
+                    ),
                     onSelected: (_) {
-                      _navService.startNavigation(d);
+                      setState(() {
+                        _selectedCategoryFilter = cat;
+                      });
                     },
                   ),
                 );
@@ -1244,53 +1255,107 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           ),
           const SizedBox(height: 10),
 
-          // Custom Search Input Field
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _destinationInputController,
-                  style: const TextStyle(fontSize: 12, color: Colors.white),
-                  decoration: InputDecoration(
-                    hintText: "Enter custom shop/room name...",
-                    hintStyle: const TextStyle(fontSize: 11, color: Colors.white38),
-                    filled: true,
-                    fillColor: const Color(0xFF1E293B),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide.none,
+          // Discovered Nearby POIs List
+          if (filteredPlaces.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Center(
+                child: Text(
+                  isLoading ? "Discovering nearby locations within 4km..." : "No places found matching criteria.",
+                  style: const TextStyle(fontSize: 12, color: Colors.white54),
+                ),
+              ),
+            )
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: math.min(filteredPlaces.length, 8),
+              itemBuilder: (context, index) {
+                final item = filteredPlaces[index];
+                final isCurrentTarget = dest?.id == item.id;
+
+                IconData catIcon = Icons.place;
+                if (item.category == "Medical & Health") catIcon = Icons.local_hospital;
+                if (item.category == "Food & Dining") catIcon = Icons.restaurant;
+                if (item.category == "Groceries & Shopping") catIcon = Icons.shopping_cart;
+                if (item.category == "Transit & Stations") catIcon = Icons.directions_bus;
+                if (item.category == "Banks & ATMs") catIcon = Icons.account_balance;
+                if (item.category == "Landmarks & Parks") catIcon = Icons.park;
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: isCurrentTarget
+                        ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
+                        : const Color(0xFF1E293B),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: isCurrentTarget ? const Color(0xFF00E5FF) : Colors.white10,
                     ),
                   ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                onPressed: () {
-                  final text = _destinationInputController.text.trim();
-                  if (text.isNotEmpty) {
-                    final customDest = NavTargetDestination(
-                      id: "custom_${DateTime.now().millisecondsSinceEpoch}",
-                      name: text,
-                      category: "Custom Target",
-                      latitude: 17.4436,
-                      longitude: 78.3774,
-                      aliases: [text.toLowerCase()],
-                    );
-                    _navService.startNavigation(customDest);
-                    _destinationInputController.clear();
-                  }
-                },
-                icon: const Icon(Icons.search, size: 16),
-                label: const Text("Go", style: TextStyle(fontSize: 11)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF00E5FF),
-                  foregroundColor: Colors.black,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                ),
-              ),
-            ],
-          ),
+                  child: Row(
+                    children: [
+                      Icon(catIcon, size: 18, color: const Color(0xFF00E5FF)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              item.name,
+                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (item.address != null)
+                              Text(
+                                item.address!,
+                                style: const TextStyle(fontSize: 10, color: Colors.white54),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              "${item.formattedDistance} • ${item.clockZone ?? '12 o\'clock'}",
+                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF00E5FF)),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          GestureDetector(
+                            onTap: () {
+                              _navService.startNavigation(item);
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: isCurrentTarget ? Colors.green : const Color(0xFF00E5FF),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                isCurrentTarget ? "ACTIVE" : "NAVIGATE",
+                                style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.black),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
         ],
       ),
     );
@@ -1399,15 +1464,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
+              const Row(
                 children: [
-                  Icon(
-                    _isSpeaking ? Icons.volume_up : Icons.volume_mute,
-                    color: _isSpeaking ? const Color(0xFF76FF03) : Colors.white54,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 8),
-                  const Text("ZERO-OVERLAP AUDIO MUTEX", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
+                  Icon(Icons.volume_up, color: Color(0xFF00E5FF), size: 18),
+                  SizedBox(width: 8),
+                  Text("AUDIO MUTEX GOVERNANCE", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
                 ],
               ),
               Container(
@@ -1417,102 +1478,20 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(
-                  _isSpeaking ? "SPEAKING" : "IDLE",
+                  _isSpeaking ? "SPEAKING" : "SILENT (STANDBY)",
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
-                    color: _isSpeaking ? const Color(0xFF76FF03) : Colors.white70,
+                    color: _isSpeaking ? const Color(0xFF76FF03) : Colors.white54,
                   ),
                 ),
-              ),
+              )
             ],
           ),
-          const SizedBox(height: 10),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0E1420),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.white10),
-            ),
-            child: Text(
-              _activeSpeech,
-              style: TextStyle(
-                fontSize: 12,
-                color: hasCriticalHazard ? const Color(0xFFFF1744) : Colors.white,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showApiConfigDialog() {
-    final urlController = TextEditingController(text: "http://127.0.0.1:8000/detect");
-    final keyController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF131B2A),
-        title: const Text("Configure Vision API / Cloud Endpoint", style: TextStyle(fontSize: 15, color: Color(0xFF00E5FF))),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text("Endpoint URL (YOLOv8 server or Cloud Vision API):", style: TextStyle(fontSize: 11, color: Colors.white70)),
-            const SizedBox(height: 6),
-            TextField(
-              controller: urlController,
-              style: const TextStyle(fontSize: 12, color: Colors.white),
-              decoration: const InputDecoration(
-                filled: true,
-                fillColor: Color(0xFF1E293B),
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Text("API Key / Bearer Token (Optional):", style: TextStyle(fontSize: 11, color: Colors.white70)),
-            const SizedBox(height: 6),
-            TextField(
-              controller: keyController,
-              style: const TextStyle(fontSize: 12, color: Colors.white),
-              decoration: const InputDecoration(
-                filled: true,
-                fillColor: Color(0xFF1E293B),
-                border: OutlineInputBorder(),
-                isDense: true,
-                hintText: "Bearer token if required...",
-                hintStyle: TextStyle(fontSize: 11, color: Colors.white24),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final url = urlController.text.trim();
-              if (url.isNotEmpty) {
-                _visionStream.configure(
-                  serverUrl: url,
-                  apiKey: keyController.text.trim().isNotEmpty ? keyController.text.trim() : null,
-                );
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text("Vision endpoint configured to: $url")),
-                );
-              }
-              Navigator.pop(ctx);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF), foregroundColor: Colors.black),
-            child: const Text("Save"),
+          const SizedBox(height: 8),
+          Text(
+            "\"$_activeSpeech\"",
+            style: const TextStyle(fontSize: 13, fontStyle: FontStyle.italic, color: Colors.white),
           ),
         ],
       ),
@@ -1520,57 +1499,48 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   }
 
   Widget _buildControlBar() {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF131B2A),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text("QUICK ACTIONS & TESTING", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              ElevatedButton.icon(
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
                 onPressed: () {
-                  _captureAndAnalyzeCloudFrame();
-                },
-                icon: const Icon(Icons.refresh, color: Colors.black, size: 16),
-                label: const Text("Rescan Surroundings (Tell Once)"),
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF), foregroundColor: Colors.black),
-              ),
-              OutlinedButton.icon(
-                onPressed: _showApiConfigDialog,
-                icon: const Icon(Icons.settings_ethernet, size: 16, color: Color(0xFF00E5FF)),
-                label: const Text("Config Vision API URL", style: TextStyle(color: Color(0xFF00E5FF))),
-                style: OutlinedButton.styleFrom(side: const BorderSide(color: Color(0xFF00E5FF))),
-              ),
-              ElevatedButton.icon(
-                onPressed: _clearHazards,
-                icon: const Icon(Icons.check_circle, color: Colors.black, size: 16),
-                label: const Text("Clear Path"),
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF76FF03), foregroundColor: Colors.black),
-              ),
-              OutlinedButton.icon(
-                onPressed: () {
+                  _onDeviceDetector.forceRescan();
                   _audioMutex.speak(
-                    text: "Turn 90 degrees right towards corridor at 3 o'clock.",
+                    text: "Rescanning environment.",
                     priority: AudioPriority.level2Navigation,
                     haptic: true,
                   );
                 },
-                icon: const Icon(Icons.record_voice_over, size: 16),
-                label: const Text("Speak Guidance"),
+                icon: const Icon(Icons.refresh, size: 16),
+                label: const Text("Rescan Vision", style: TextStyle(fontSize: 12)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00E5FF),
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
               ),
-            ],
-          ),
-        ],
-      ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _clearHazards,
+                icon: const Icon(Icons.check_circle_outline, size: 16),
+                label: const Text("Clear Hazards", style: TextStyle(fontSize: 12)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFF76FF03),
+                  side: const BorderSide(color: Color(0xFF76FF03)),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
