@@ -135,12 +135,16 @@ class _DetectionCandidate {
     required this.xMax,
     required this.yMax,
   });
+
+  double get width => (xMax - xMin).clamp(0.0, 1.0);
+  double get height => (yMax - yMin).clamp(0.0, 1.0);
+  double get area => width * height;
 }
 
 /// OnDeviceObstacleDetector: 100% Offline, High-Speed Edge Neural Obstacle Detection Engine.
 /// 
-/// Runs directly on device CPU/NPU with multi-threading and background isolate letterboxing.
-/// Zero lag, zero UI stutter, and calibrated metric distance estimation.
+/// Runs directly on device CPU/NPU with multi-threading, strict false-positive suppression,
+/// temporal persistence filtering, and calibrated metric distance estimation.
 class OnDeviceObstacleDetector {
   static final OnDeviceObstacleDetector _instance =
       OnDeviceObstacleDetector._internal();
@@ -156,13 +160,14 @@ class OnDeviceObstacleDetector {
 
   // Calibrated focal length ratio for mobile smartphone cameras (~68° vertical FOV)
   static const double _focalLengthRatio = 1.15;
-  static const double _confidenceThreshold = 0.25;
+  static const double _defaultConfidenceThreshold = 0.38;
+  static const double _personConfidenceThreshold = 0.52; // High threshold for Person to eliminate ghost detections
   static const double _iouThreshold = 0.45;
 
   // Real-world physical dimensions (Height, Width in meters, AudioPriority, Spoken Name)
   static const Map<String, _ObjectPrior> _priors = {
-    // Pedestrians & Living Entities
-    "person": _ObjectPrior(1.72, 0.50, AudioPriority.level0Critical, "Person"),
+    // Pedestrians & Living Entities (Default to Safety tier so it doesn't spam)
+    "person": _ObjectPrior(1.72, 0.50, AudioPriority.level1Safety, "Person"),
     "dog": _ObjectPrior(0.60, 0.75, AudioPriority.level1Safety, "Dog"),
     "cat": _ObjectPrior(0.30, 0.45, AudioPriority.level2Navigation, "Cat"),
     "horse": _ObjectPrior(1.80, 2.00, AudioPriority.level0Critical, "Horse"),
@@ -217,6 +222,9 @@ class OnDeviceObstacleDetector {
     "scissors": _ObjectPrior(0.02, 0.15, AudioPriority.level3Context, "Scissors"),
   };
 
+  // Multi-frame temporal persistence to suppress 1-frame transient glitches
+  final Map<String, int> _temporalTrackCount = {};
+  
   // Anti-repetition debounced speech tracking
   final Map<String, DateTime> _announcedObstacles = {};
   final Map<String, double> _announcedDistances = {};
@@ -272,6 +280,7 @@ class OnDeviceObstacleDetector {
   void forceRescan() {
     _announcedObstacles.clear();
     _announcedDistances.clear();
+    _temporalTrackCount.clear();
     _wasHazardSpoken = false;
   }
 
@@ -299,6 +308,7 @@ class OnDeviceObstacleDetector {
 
     try {
       final List<DetectedObstacle> obstacles = [];
+      final Set<String> currentFrameKeys = {};
 
       if (_interpreter != null) {
         // 1. Asynchronously letterbox and normalize frame in background isolate (Zero UI Block)
@@ -318,7 +328,7 @@ class OnDeviceObstacleDetector {
         // 3. Run native neural inference
         _interpreter!.run(preprocessed.tensor, output);
 
-        // 4. Parse bounding boxes and confidence scores with accurate letterbox unmapping
+        // 4. Parse bounding boxes and confidence scores with strict false-positive filtering
         final candidates = _parseYoloOutput(
           output[0],
           numClasses,
@@ -333,13 +343,13 @@ class OnDeviceObstacleDetector {
         // 5. Non-Maximum Suppression (NMS)
         final filtered = _applyNms(candidates, _iouThreshold);
 
-        // 6. Calculate Metric Distance & Spatial Clock Position
+        // 6. Calculate Metric Distance & Spatial Clock Position with Temporal Confirmation
         for (final cand in filtered) {
           final label = cand.label;
           final prior = _getPriorForLabel(label);
 
           final bboxH = cand.yMax - cand.yMin;
-          final normalizedHeight = bboxH.clamp(0.05, 1.0);
+          final normalizedHeight = bboxH.clamp(0.06, 1.0);
 
           // Calibrated pinhole distance estimation
           double rawDistance = (_focalLengthRatio * prior.realHeightMeters) / normalizedHeight;
@@ -367,12 +377,24 @@ class OnDeviceObstacleDetector {
           final normCenterX = (cand.xMin + cand.xMax) / 2.0;
           final clock = _calculateClockPosition(normCenterX);
 
+          // Multi-frame temporal persistence key
+          final trackKey = "${cand.label}_$clock";
+          currentFrameKeys.add(trackKey);
+          final prevCount = _temporalTrackCount[trackKey] ?? 0;
+          final currentCount = prevCount + 1;
+          _temporalTrackCount[trackKey] = currentCount;
+
+          // Require at least 2 consecutive frames OR high confidence (>= 0.65) to confirm
+          if (currentCount < 2 && cand.score < 0.65) {
+            continue;
+          }
+
           // Time To Collision (TTC) assuming 1.1 m/s average walking pace
           final ttcSeconds = double.parse((distanceMeters / 1.1).toStringAsFixed(1));
 
           // Priority determination
           AudioPriority priority;
-          if (distanceMeters < 1.3 || prior.defaultPriority == AudioPriority.level0Critical) {
+          if (distanceMeters < 1.2 || prior.defaultPriority == AudioPriority.level0Critical) {
             priority = AudioPriority.level0Critical;
           } else if (distanceMeters < 2.5 || prior.defaultPriority == AudioPriority.level1Safety) {
             priority = AudioPriority.level1Safety;
@@ -393,6 +415,9 @@ class OnDeviceObstacleDetector {
             clockPosition: clock,
           ));
         }
+
+        // Decay tracks not seen in current frame
+        _temporalTrackCount.removeWhere((k, v) => !currentFrameKeys.contains(k));
       }
 
       // Apply Kinematic Motion & Trajectory Tracking
@@ -433,7 +458,7 @@ class OnDeviceObstacleDetector {
     }
   }
 
-  /// Parse YOLOv8 raw prediction matrices [84, 2100] with exact letterbox coordinate unmapping
+  /// Parse YOLOv8 raw prediction matrices [84, 2100] with strict false-positive suppression
   List<_DetectionCandidate> _parseYoloOutput(
     List<List<double>> raw,
     int numClasses,
@@ -458,7 +483,16 @@ class OnDeviceObstacleDetector {
         }
       }
 
-      if (maxScore >= _confidenceThreshold && bestClass >= 0) {
+      if (bestClass < 0) continue;
+
+      final labelName = (bestClass < _labels.length) ? _labels[bestClass].toLowerCase() : "obstacle";
+
+      // Class-specific threshold gating to eliminate ghost "person" false positives
+      final double requiredThreshold = (labelName == "person")
+          ? _personConfidenceThreshold // 0.52 for Person
+          : _defaultConfidenceThreshold; // 0.38 for other objects
+
+      if (maxScore >= requiredThreshold) {
         final cx = raw[0][col];
         final cy = raw[1][col];
         final w = raw[2][col];
@@ -470,16 +504,25 @@ class OnDeviceObstacleDetector {
         final xMax = (cx + w / 2.0 - padX) / scaledW;
         final yMax = (cy + h / 2.0 - padY) / scaledH;
 
-        final labelName = (bestClass < _labels.length) ? _labels[bestClass] : "obstacle";
-
-        list.add(_DetectionCandidate(
+        final cand = _DetectionCandidate(
           label: labelName,
           score: maxScore,
           xMin: xMin.clamp(0.0, 1.0),
           yMin: yMin.clamp(0.0, 1.0),
           xMax: xMax.clamp(0.0, 1.0),
           yMax: yMax.clamp(0.0, 1.0),
-        ));
+        );
+
+        // Reject tiny background noise (area < 0.008)
+        if (cand.area < 0.008) continue;
+
+        // Geometric verification for Person: Person must have vertical stature (not wide flat horizontal line)
+        if (labelName == "person") {
+          if (cand.height < 0.10) continue; // Minimum 10% screen height
+          if (cand.width > 1.6 * cand.height) continue; // Reject wide flat false positives
+        }
+
+        list.add(cand);
       }
     }
 
@@ -504,7 +547,7 @@ class OnDeviceObstacleDetector {
       }
       if (shouldSelect) {
         selected.add(cand);
-        if (selected.length >= 10) break; // Limit to top 10 most prominent obstacles
+        if (selected.length >= 8) break; // Limit to top 8 most prominent obstacles
       }
     }
     return selected;
@@ -555,7 +598,7 @@ class OnDeviceObstacleDetector {
     if (cycle.obstacles.isEmpty) {
       if (_wasHazardSpoken) {
         if (_lastClearSpokenTime == null ||
-            now.difference(_lastClearSpokenTime!).inSeconds >= 4) {
+            now.difference(_lastClearSpokenTime!).inSeconds >= 5) {
           _lastClearSpokenTime = now;
           _wasHazardSpoken = false;
           _announcedObstacles.clear();
@@ -584,12 +627,16 @@ class OnDeviceObstacleDetector {
       final elapsedSec = now.difference(lastSpoken).inSeconds;
       final distDelta = (lastDist != null) ? (lastDist - topHazard.distanceMeters).abs() : 99.0;
 
-      // Speak again if moved significantly closer (>= 0.8m) or cooldown expired (5s)
-      if (topHazard.priority == AudioPriority.level0Critical && (elapsedSec >= 2 || distDelta >= 0.6)) {
+      // Critical hazards (<1.2m) speak if closer by 0.6m or 6s elapsed
+      if (topHazard.priority == AudioPriority.level0Critical && (elapsedSec >= 6 || distDelta >= 0.6)) {
         shouldSpeak = true;
-      } else if (topHazard.priority == AudioPriority.level1Safety && (elapsedSec >= 4 || distDelta >= 0.9)) {
+      } 
+      // Safety items speak if closer by >= 1.2m or 12s cooldown elapsed
+      else if (topHazard.priority == AudioPriority.level1Safety && (elapsedSec >= 12 || distDelta >= 1.2)) {
         shouldSpeak = true;
-      } else if (elapsedSec >= 8) {
+      } 
+      // Context items speak only after 18s
+      else if (elapsedSec >= 18) {
         shouldSpeak = true;
       }
     }
