@@ -1119,16 +1119,22 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               onPressed: isAnalyzing
                   ? null
                   : () async {
-                      if (_cameraController != null && _cameraController!.value.isInitialized) {
-                        final img = await _cameraController!.takePicture();
-                        final bytes = await img.readAsBytes();
-                        await _cloudAiService.analyzeScene(
-                          bytes,
-                          currentObstacles: _activeObstacles,
-                          devicePitchDeg: _pitchDeg,
-                          force: true,
-                          speakResult: true,
-                        );
+                      if (_cameraController != null &&
+                          _cameraController!.value.isInitialized &&
+                          !_cameraController!.value.isTakingPicture) {
+                        try {
+                          final img = await _cameraController!.takePicture();
+                          final bytes = await img.readAsBytes();
+                          await _cloudAiService.analyzeScene(
+                            bytes,
+                            currentObstacles: _activeObstacles,
+                            devicePitchDeg: _pitchDeg,
+                            force: true,
+                            speakResult: true,
+                          );
+                        } catch (e) {
+                          debugPrint("[SceneComprehension] takePicture exception: $e");
+                        }
                       }
                     },
               icon: isAnalyzing

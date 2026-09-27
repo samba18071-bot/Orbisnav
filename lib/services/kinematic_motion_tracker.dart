@@ -148,15 +148,15 @@ class KinematicMotionTracker {
     final lower = label.toLowerCase();
     final isPerson = lower.contains("person") || lower.contains("pedestrian") || lower.contains("man") || lower.contains("woman");
     final isVehicle = lower.contains("car") || lower.contains("vehicle") || lower.contains("bus") || lower.contains("truck") || lower.contains("motorcycle") || lower.contains("bicycle");
-    final isBranchOrOverhead = lower.contains("branch") || lower.contains("tree") || lower.contains("plant") || (yMin < 0.22 && yMax < 0.60);
+    final isBranchOrOverhead = lower.contains("branch") || lower.contains("tree") || lower.contains("potted plant");
 
     ObjectMotionType motionType = ObjectMotionType.stationaryAhead;
     String motionPhrase = "";
     AudioPriority priority = currentPriority;
     double computedTtc = distanceMeters / 1.1;
 
-    // 1. Detect Overhead / Low-Hanging Protrusions
-    if (isBranchOrOverhead && yMin < 0.20 && distanceMeters < 3.0) {
+    // 1. Detect Overhead / Low-Hanging Protrusions (Only for genuine trees/branches near top)
+    if (isBranchOrOverhead && yMin < 0.15 && distanceMeters < 2.5) {
       motionType = ObjectMotionType.overheadHazard;
       motionPhrase = "Low-hanging branch overhead";
       priority = AudioPriority.level0Critical;
