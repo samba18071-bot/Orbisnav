@@ -200,7 +200,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     if (_cameras.isNotEmpty) {
       _cameraController = CameraController(
         _cameras.first,
-        ResolutionPreset.medium,
+        ResolutionPreset.low,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.jpeg,
       );
@@ -272,17 +272,25 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   /// high-concurrency cloud obstacle detection via WebSocket / HTTP.
   void _startOnlineVisionStream() {
     _onlineStreamTimer?.cancel();
-    // Dynamic interval based on network latency profile (8 FPS / 5 FPS / 3 FPS)
-    _onlineStreamTimer = Timer.periodic(const Duration(milliseconds: 600), (_) {
-      if (_isOnlineVisionActive && _isCameraInitialized && !_isCapturingOnlineFrame) {
+    _onlineStreamTimer = Timer.periodic(const Duration(milliseconds: 700), (_) {
+      if (_isOnlineVisionActive &&
+          _isCameraInitialized &&
+          !_isCapturingOnlineFrame &&
+          _cameraController != null &&
+          _cameraController!.value.isInitialized &&
+          !_cameraController!.value.isTakingPicture) {
         _captureAndAnalyzeCloudFrame();
       }
     });
   }
 
   Future<void> _captureAndAnalyzeCloudFrame() async {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) return;
-    if (_isCapturingOnlineFrame) return;
+    if (_cameraController == null ||
+        !_cameraController!.value.isInitialized ||
+        _cameraController!.value.isTakingPicture ||
+        _isCapturingOnlineFrame) {
+      return;
+    }
 
     _isCapturingOnlineFrame = true;
     try {

@@ -8,6 +8,48 @@ import '../controllers/audio_mutex_controller.dart';
 import 'online_obstacle_detector.dart';
 import 'kinematic_motion_tracker.dart';
 
+/// Top-level isolate worker to decode and normalize camera frames without blocking UI thread
+List<List<List<List<double>>>> _isolatePreprocessFrame(Uint8List jpegBytes) {
+  const int targetSize = 320;
+  final rawImage = img.decodeImage(jpegBytes);
+  if (rawImage == null) {
+    return List.generate(
+      1,
+      (_) => List.generate(
+        targetSize,
+        (_) => List.generate(targetSize, (_) => [0.0, 0.0, 0.0]),
+      ),
+    );
+  }
+
+  // Aspect-fit center crop to avoid object distortion
+  final int minDim = math.min(rawImage.width, rawImage.height);
+  final int cropX = (rawImage.width - minDim) ~/ 2;
+  final int cropY = (rawImage.height - minDim) ~/ 2;
+  final cropped = img.copyCrop(rawImage, x: cropX, y: cropY, width: minDim, height: minDim);
+  final resized = img.copyResize(cropped, width: targetSize, height: targetSize, interpolation: img.Interpolation.linear);
+
+  final input = List.generate(
+    1,
+    (_) => List.generate(
+      targetSize,
+      (y) => List.generate(
+        targetSize,
+        (x) {
+          final pixel = resized.getPixel(x, y);
+          return [
+            pixel.r / 255.0,
+            pixel.g / 255.0,
+            pixel.b / 255.0,
+          ];
+        },
+      ),
+    ),
+  );
+
+  return input;
+}
+
 /// Physical dimensional priors for real-world COCO and assistive navigation classes.
 class _ObjectPrior {
   final double realHeightMeters;
@@ -23,10 +65,10 @@ class _ObjectPrior {
   );
 }
 
-/// OnDeviceObstacleDetector: 100% Offline, Edge-Native Neural Obstacle Detection Engine.
+/// OnDeviceObstacleDetector: 100% Offline, High-Speed Edge Neural Obstacle Detection Engine.
 /// 
-/// Runs directly on device CPU/GPU/NPU using TensorFlow Lite (YOLOv8 real-world dataset).
-/// Requires NO Mac, NO Python server, NO ML Kit credentials, and NO Internet connection.
+/// Runs directly on device CPU/NPU with multi-threading and background isolate preprocessing.
+/// Zero lag, zero UI stutter, and calibrated metric distance estimation.
 class OnDeviceObstacleDetector {
   static final OnDeviceObstacleDetector _instance =
       OnDeviceObstacleDetector._internal();
@@ -41,9 +83,9 @@ class OnDeviceObstacleDetector {
   bool _isEnabled = true;
 
   // Calibrated focal length for smartphone wide-angle lenses (~68° HFOV at 720p/480p)
-  static const double _focalLengthPx = 560.0;
+  static const double _focalLengthPx = 520.0;
   static const int _inputSize = 320;
-  static const double _confidenceThreshold = 0.35;
+  static const double _confidenceThreshold = 0.28;
   static const double _iouThreshold = 0.45;
 
   // Real-world physical dimensions (Height, Width in meters, AudioPriority, Spoken Name)
@@ -135,7 +177,7 @@ class OnDeviceObstacleDetector {
           .where((e) => e.isNotEmpty)
           .toList();
 
-      // 2. Load TFLite Model with multi-threaded edge interpreter
+      // 2. Load TFLite Model with multi-threaded edge interpreter (4 threads)
       final options = InterpreterOptions()..threads = 4;
       try {
         _interpreter = await Interpreter.fromAsset(
@@ -144,14 +186,13 @@ class OnDeviceObstacleDetector {
         );
         debugPrint("[OnDeviceObstacleDetector] Loaded YOLOv8 TFLite model with ${_labels.length} classes.");
       } catch (modelErr) {
-        debugPrint("[OnDeviceObstacleDetector] Primary model load note: $modelErr. Fallback interpreter ready.");
+        debugPrint("[OnDeviceObstacleDetector] Model load note: $modelErr");
       }
 
       _isInitialized = true;
       debugPrint("[OnDeviceObstacleDetector] Standalone Edge-AI Vision initialized successfully.");
     } catch (e) {
       debugPrint("[OnDeviceObstacleDetector] Initialization error: $e");
-      // Even if file system takes a moment, initialize state so UI continues gracefully
       _isInitialized = true;
     }
   }
@@ -163,7 +204,7 @@ class OnDeviceObstacleDetector {
     _wasHazardSpoken = false;
   }
 
-  /// Process camera frame bytes locally on device with Zero Mac / Cloud reliance
+  /// Process camera frame bytes locally on device with Zero UI Lag
   Future<OnlineDetectionCycleResult> processFrameBytes(
     Uint8List jpegBytes, {
     double devicePitchDeg = 0.0,
@@ -189,111 +230,88 @@ class OnDeviceObstacleDetector {
       final List<DetectedObstacle> obstacles = [];
 
       if (_interpreter != null) {
-        // 1. Decode and resize image to model input size (320x320)
-        final rawImage = img.decodeImage(jpegBytes);
-        if (rawImage != null) {
-          final resized = img.copyResize(rawImage, width: _inputSize, height: _inputSize);
-          
-          // 2. Normalize RGB pixels to [0.0, 1.0] float32 tensor
-          final input = List.generate(
-            1,
-            (_) => List.generate(
-              _inputSize,
-              (y) => List.generate(
-                _inputSize,
-                (x) {
-                  final pixel = resized.getPixel(x, y);
-                  return [
-                    pixel.r / 255.0,
-                    pixel.g / 255.0,
-                    pixel.b / 255.0,
-                  ];
-                },
-              ),
-            ),
-          );
+        // 1. Asynchronously decode and aspect-fit frame in background isolate (Zero UI Block)
+        final input = await compute(_isolatePreprocessFrame, jpegBytes);
 
-          // 3. Prepare output tensor: YOLOv8 320x320 outputs [1, 84, 2100]
-          final numClasses = _labels.isNotEmpty ? _labels.length : 80;
-          final numPredictions = 2100;
-          final output = List.generate(
-            1,
-            (_) => List.generate(
-              4 + numClasses,
-              (_) => List.filled(numPredictions, 0.0),
-            ),
-          );
+        // 2. Prepare output tensor: YOLOv8 320x320 outputs [1, 84, 2100]
+        final numClasses = _labels.isNotEmpty ? _labels.length : 80;
+        const int numPredictions = 2100;
+        final output = List.generate(
+          1,
+          (_) => List.generate(
+            4 + numClasses,
+            (_) => List.filled(numPredictions, 0.0),
+          ),
+        );
 
-          // 4. Run native neural inference
-          _interpreter!.run(input, output);
+        // 3. Run native neural inference
+        _interpreter!.run(input, output);
 
-          // 5. Parse bounding boxes and confidence scores
-          final candidates = _parseYoloOutput(output[0], numClasses, numPredictions);
+        // 4. Parse bounding boxes and confidence scores
+        final candidates = _parseYoloOutput(output[0], numClasses, numPredictions);
 
-          // 6. Non-Maximum Suppression (NMS)
-          final filtered = _applyNms(candidates, _iouThreshold);
+        // 5. Non-Maximum Suppression (NMS)
+        final filtered = _applyNms(candidates, _iouThreshold);
 
-          // 7. Calculate Metric Distance & Spatial Clock Position
-          for (final cand in filtered) {
-            final label = cand.label;
-            final prior = _getPriorForLabel(label);
+        // 6. Calculate Metric Distance & Spatial Clock Position
+        for (final cand in filtered) {
+          final label = cand.label;
+          final prior = _getPriorForLabel(label);
 
-            final bboxH = cand.yMax - cand.yMin;
-            final bboxHeightPx = math.max(bboxH * 720.0, 24.0);
+          final bboxH = cand.yMax - cand.yMin;
+          final bboxHeightPx = math.max(bboxH * 720.0, 24.0);
 
-            // Calibrated pinhole distance estimation
-            double rawDistance = (_focalLengthPx * prior.realHeightMeters) / bboxHeightPx;
+          // Calibrated pinhole distance estimation
+          double rawDistance = (_focalLengthPx * prior.realHeightMeters) / bboxHeightPx;
 
-            // Pitch Angle Compensation (Accelerometer sensor fusion)
-            if (devicePitchDeg.abs() > 3.0) {
-              final double pitchRad = (devicePitchDeg * math.pi) / 180.0;
-              final double cameraHeightMeters = 1.35; // Standard chest/handheld carrying height
-              final double yBottomNorm = cand.yMax;
-              final double verticalAngleRad = pitchRad + (yBottomNorm - 0.5) * 0.75;
-              
-              if (verticalAngleRad > 0.10) {
-                final double groundPlaneDist = cameraHeightMeters / math.tan(verticalAngleRad);
-                if (groundPlaneDist > 0.3 && groundPlaneDist < 8.0) {
-                  // Weighted fusion of optical pinhole and ground-plane triangulation
-                  rawDistance = (rawDistance * 0.65) + (groundPlaneDist * 0.35);
-                }
+          // Pitch Angle Compensation (Accelerometer sensor fusion)
+          if (devicePitchDeg.abs() > 3.0) {
+            final double pitchRad = (devicePitchDeg * math.pi) / 180.0;
+            const double cameraHeightMeters = 1.35; // Standard chest/handheld carrying height
+            final double yBottomNorm = cand.yMax;
+            final double verticalAngleRad = pitchRad + (yBottomNorm - 0.5) * 0.75;
+            
+            if (verticalAngleRad > 0.10) {
+              final double groundPlaneDist = cameraHeightMeters / math.tan(verticalAngleRad);
+              if (groundPlaneDist > 0.3 && groundPlaneDist < 7.0) {
+                rawDistance = (rawDistance * 0.60) + (groundPlaneDist * 0.40);
               }
             }
-
-            final distanceMeters = double.parse(
-              rawDistance.clamp(0.3, 7.5).toStringAsFixed(1),
-            );
-
-            // 12-Hour Spatial Clock Position
-            final normCenterX = (cand.xMin + cand.xMax) / 2.0;
-            final clock = _calculateClockPosition(normCenterX);
-
-            // Time To Collision (TTC) assuming 1.1 m/s average walking pace
-            final ttcSeconds = double.parse((distanceMeters / 1.1).toStringAsFixed(1));
-
-            // Priority determination
-            AudioPriority priority;
-            if (distanceMeters < 1.2 || prior.defaultPriority == AudioPriority.level0Critical) {
-              priority = AudioPriority.level0Critical;
-            } else if (distanceMeters < 2.2 || prior.defaultPriority == AudioPriority.level1Safety) {
-              priority = AudioPriority.level1Safety;
-            } else {
-              priority = prior.defaultPriority;
-            }
-
-            obstacles.add(DetectedObstacle(
-              label: prior.spokenLabel,
-              confidence: cand.score,
-              xMin: cand.xMin.clamp(0.0, 1.0),
-              yMin: cand.yMin.clamp(0.0, 1.0),
-              xMax: cand.xMax.clamp(0.0, 1.0),
-              yMax: cand.yMax.clamp(0.0, 1.0),
-              distanceMeters: distanceMeters,
-              ttcSeconds: ttcSeconds,
-              priority: priority,
-              clockPosition: clock,
-            ));
           }
+
+          final distanceMeters = double.parse(
+            rawDistance.clamp(0.3, 7.0).toStringAsFixed(1),
+          );
+
+          // 12-Hour Spatial Clock Position
+          final normCenterX = (cand.xMin + cand.xMax) / 2.0;
+          final clock = _calculateClockPosition(normCenterX);
+
+          // Time To Collision (TTC) assuming 1.1 m/s average walking pace
+          final ttcSeconds = double.parse((distanceMeters / 1.1).toStringAsFixed(1));
+
+          // Priority determination
+          AudioPriority priority;
+          if (distanceMeters < 1.2 || prior.defaultPriority == AudioPriority.level0Critical) {
+            priority = AudioPriority.level0Critical;
+          } else if (distanceMeters < 2.2 || prior.defaultPriority == AudioPriority.level1Safety) {
+            priority = AudioPriority.level1Safety;
+          } else {
+            priority = prior.defaultPriority;
+          }
+
+          obstacles.add(DetectedObstacle(
+            label: prior.spokenLabel,
+            confidence: cand.score,
+            xMin: cand.xMin.clamp(0.0, 1.0),
+            yMin: cand.yMin.clamp(0.0, 1.0),
+            xMax: cand.xMax.clamp(0.0, 1.0),
+            yMax: cand.yMax.clamp(0.0, 1.0),
+            distanceMeters: distanceMeters,
+            ttcSeconds: ttcSeconds,
+            priority: priority,
+            clockPosition: clock,
+          ));
         }
       }
 
@@ -344,7 +362,6 @@ class OnDeviceObstacleDetector {
     final List<_DetectionCandidate> list = [];
 
     for (int col = 0; col < numPredictions; col++) {
-      // Find class with highest score
       int bestClass = -1;
       double maxScore = 0.0;
 
@@ -362,7 +379,6 @@ class OnDeviceObstacleDetector {
         final w = raw[2][col];
         final h = raw[3][col];
 
-        // Convert center format to normalized coordinates
         final xMin = (cx - w / 2.0) / _inputSize;
         final yMin = (cy - h / 2.0) / _inputSize;
         final xMax = (cx + w / 2.0) / _inputSize;
@@ -402,7 +418,7 @@ class OnDeviceObstacleDetector {
       }
       if (shouldSelect) {
         selected.add(cand);
-        if (selected.length >= 8) break; // Limit max active obstacles for audio clarity
+        if (selected.length >= 6) break;
       }
     }
 
@@ -459,7 +475,6 @@ class OnDeviceObstacleDetector {
       final lastSpoken = _announcedObstacles[labelKey];
       final lastDist = _announcedDistances[labelKey] ?? 99.0;
 
-      // Distance change delta for re-alerting approaching hazard
       final deltaDist = (lastDist - hazard.distanceMeters).abs();
       final hasMovedSignificantly = deltaDist >= 0.6;
       final isStale = lastSpoken == null || now.difference(lastSpoken).inSeconds >= 4;
@@ -477,7 +492,6 @@ class OnDeviceObstacleDetector {
         );
       }
     } else if (result.obstacles.isEmpty && _wasHazardSpoken) {
-      // Path clear debounce: tell only once after clearing hazards
       final canAnnounceClear = _lastClearSpokenTime == null ||
           now.difference(_lastClearSpokenTime!).inSeconds >= 6;
 

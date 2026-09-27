@@ -34,6 +34,10 @@ android {
         }
     }
 
+    aaptOptions {
+        noCompress += listOf("tflite", "lite")
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
