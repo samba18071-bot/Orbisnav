@@ -155,8 +155,8 @@ class OnDeviceObstacleDetector {
 
   // Calibrated focal length ratio for mobile smartphone cameras (~68° vertical FOV)
   static const double _focalLengthRatio = 1.15;
-  static const double _defaultConfidenceThreshold = 0.38;
-  static const double _personConfidenceThreshold = 0.52; // High threshold for Person to eliminate ghost detections
+  static const double _defaultConfidenceThreshold = 0.48;
+  static const double _personConfidenceThreshold = 0.58; // Robust threshold for Person
   static const double _iouThreshold = 0.45;
 
   // Real-world physical dimensions (Height, Width in meters, AudioPriority, Spoken Name)
@@ -482,10 +482,13 @@ class OnDeviceObstacleDetector {
 
       final labelName = (bestClass < _labels.length) ? _labels[bestClass].toLowerCase() : "obstacle";
 
-      // Class-specific threshold gating to eliminate ghost "person" false positives
+      // Whitelist filter: Only accept meaningful navigation & obstacle classes
+      if (!_priors.containsKey(labelName)) continue;
+
+      // Class-specific threshold gating to eliminate ghost false positives
       final double requiredThreshold = (labelName == "person")
-          ? _personConfidenceThreshold // 0.52 for Person
-          : _defaultConfidenceThreshold; // 0.38 for other objects
+          ? _personConfidenceThreshold // 0.58 for Person
+          : _defaultConfidenceThreshold; // 0.48 for other objects
 
       if (maxScore >= requiredThreshold) {
         final cx = raw[0][col];
@@ -493,11 +496,18 @@ class OnDeviceObstacleDetector {
         final w = raw[2][col];
         final h = raw[3][col];
 
+        // Auto-detect coordinate scale (pixel [0..320] vs normalized [0..1])
+        final bool isPixelScale = (cx > 1.5 || cy > 1.5 || w > 1.5 || h > 1.5);
+        final double actualCx = isPixelScale ? cx : cx * 320.0;
+        final double actualCy = isPixelScale ? cy : cy * 320.0;
+        final double actualW = isPixelScale ? w : w * 320.0;
+        final double actualH = isPixelScale ? h : h * 320.0;
+
         // Unpad and scale back to exact normalized [0.0, 1.0] preview coordinates
-        final xMin = (cx - w / 2.0 - padX) / scaledW;
-        final yMin = (cy - h / 2.0 - padY) / scaledH;
-        final xMax = (cx + w / 2.0 - padX) / scaledW;
-        final yMax = (cy + h / 2.0 - padY) / scaledH;
+        final xMin = (actualCx - actualW / 2.0 - padX) / scaledW;
+        final yMin = (actualCy - actualH / 2.0 - padY) / scaledH;
+        final xMax = (actualCx + actualW / 2.0 - padX) / scaledW;
+        final yMax = (actualCy + actualH / 2.0 - padY) / scaledH;
 
         final cand = _DetectionCandidate(
           label: labelName,
@@ -508,13 +518,13 @@ class OnDeviceObstacleDetector {
           yMax: yMax.clamp(0.0, 1.0),
         );
 
-        // Reject tiny background noise (area < 0.008)
-        if (cand.area < 0.008) continue;
+        // Reject tiny background noise (area < 0.010)
+        if (cand.area < 0.010) continue;
 
-        // Geometric verification for Person: Person must have vertical stature (not wide flat horizontal line)
+        // Geometric verification for Person: Person must have vertical stature (not wide flat horizontal surface)
         if (labelName == "person") {
-          if (cand.height < 0.10) continue; // Minimum 10% screen height
-          if (cand.width > 1.6 * cand.height) continue; // Reject wide flat false positives
+          if (cand.height < 0.12) continue; // Minimum 12% screen height
+          if (cand.width > 1.35 * cand.height) continue; // Upright human proportion
         }
 
         list.add(cand);
