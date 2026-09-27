@@ -9,13 +9,14 @@ import '../models/navigation_destination.dart';
 
 enum NavigationPhase {
   idle,
-  farFieldGps, // > 15m: GPS-guided heading & distance
-  nearFieldScanning, // <= 15m: Scanning camera frames for store signboards
-  visualHoming, // Target board sighted: Locking on to nameboard reticle
-  arrived, // Arrived at destination entrance
+  farFieldGps, // > 40m: GPS-guided campus heading & distance
+  midFieldApproach, // 15m - 40m: Approaching block building gate
+  nearFieldScanning, // <= 15m: Scanning camera frames for block signboards & doors
+  visualHoming, // Target block board sighted: Locking on to nameboard reticle
+  arrived, // Arrived at block / room entrance
 }
 
-/// Represents a sighted storefront nameboard or signboard
+/// Represents a sighted storefront or campus block signboard
 class SightedNameboard {
   final String text;
   final double confidence;
@@ -54,6 +55,7 @@ class NavigationStatusState {
   final SightedNameboard? targetBoard;
   final List<SightedNameboard> visibleBoards;
   final List<NavTargetDestination> nearbyPlaces;
+  final List<NavTargetDestination> savedPlaces;
   final bool isLoadingNearby;
   final String statusMessage;
 
@@ -68,12 +70,13 @@ class NavigationStatusState {
     this.targetBoard,
     this.visibleBoards = const [],
     this.nearbyPlaces = const [],
+    this.savedPlaces = const [],
     this.isLoadingNearby = false,
     required this.statusMessage,
   });
 }
 
-/// NameboardNavigationService: Fused GPS Geolocation + 4km Radius Live Discovery + Real-Time Visual Nameboard OCR
+/// NameboardNavigationService: Fused GPS Geolocation + 4km Live Campus & Block Discovery + Visual OCR
 class NameboardNavigationService {
   static final NameboardNavigationService _instance =
       NameboardNavigationService._internal();
@@ -93,8 +96,9 @@ class NameboardNavigationService {
   String _clockVector = "12 o'clock";
   bool _hasRealGpsFix = false;
 
-  // 4km Radius Nearby POIs Discovery
+  // 4km Radius Nearby POIs & Campus Blocks Discovery
   List<NavTargetDestination> _nearbyPlaces4km = [];
+  final List<NavTargetDestination> _customSavedPlaces = [];
   bool _isLoadingNearby = false;
   DateTime? _lastNearbyFetchTime;
   double? _lastFetchLat;
@@ -117,19 +121,51 @@ class NameboardNavigationService {
   NavigationPhase get currentPhase => _currentPhase;
   SightedNameboard? get targetBoard => _targetBoard;
   List<NavTargetDestination> get nearbyPlaces => _nearbyPlaces4km;
+  List<NavTargetDestination> get savedPlaces => _customSavedPlaces;
   bool get isLoadingNearby => _isLoadingNearby;
   bool get isNavigating => _activeDestination != null && _currentPhase != NavigationPhase.idle;
   double get currentLat => _currentLat;
   double get currentLng => _currentLng;
   bool get hasRealGpsFix => _hasRealGpsFix;
 
-  /// Starts GPS tracking and initiates live 4km radius nearby POI search
+  /// Starts GPS tracking and initiates live 4km radius nearby POI and Campus Block search
   Future<void> initializeGpsAndNearby() async {
     await _initGpsTracking();
     await fetchNearbyLocations4km(force: true);
   }
 
-  /// Starts fused GPS & Nameboard navigation to a designated destination
+  /// Saves the user's current GPS position as a custom campus block, classroom, or room
+  NavTargetDestination saveCurrentLocationAsCustomPlace({
+    required String name,
+    String category = "Saved My Places",
+    String? blockName,
+  }) {
+    final customDest = NavTargetDestination(
+      id: "saved_${DateTime.now().millisecondsSinceEpoch}",
+      name: name,
+      category: category,
+      blockName: blockName ?? name,
+      latitude: _currentLat,
+      longitude: _currentLng,
+      aliases: [name.toLowerCase(), (blockName ?? "").toLowerCase()],
+      isCustomSaved: true,
+      address: "Saved Pin (${_currentLat.toStringAsFixed(4)}, ${_currentLng.toStringAsFixed(4)})",
+    );
+
+    _customSavedPlaces.add(customDest);
+    _updateAllNearbyDistances();
+
+    AudioMutexController().speak(
+      text: "Saved $name to your campus places.",
+      priority: AudioPriority.level2Navigation,
+      haptic: true,
+    );
+
+    _notifyState("Saved $name");
+    return customDest;
+  }
+
+  /// Starts fused GPS & Campus Block navigation to a designated destination
   Future<void> startNavigation(NavTargetDestination destination) async {
     _activeDestination = destination;
     _spokenNavigationMilestones.clear();
@@ -149,8 +185,9 @@ class NameboardNavigationService {
     final milestoneKey = "start_${destination.id}";
     if (!_spokenNavigationMilestones.contains(milestoneKey)) {
       _spokenNavigationMilestones.add(milestoneKey);
+      final blockDetail = destination.blockName != null ? "at ${destination.blockName}" : "";
       AudioMutexController().speak(
-        text: "Navigating to ${destination.name}. Distance $distStr at $_clockVector. Continue forward.",
+        text: "Navigating to ${destination.name} $blockDetail. Distance $distStr at $_clockVector. Continue along pathway.",
         priority: AudioPriority.level2Navigation,
         haptic: true,
       );
@@ -266,8 +303,7 @@ class NameboardNavigationService {
     }
   }
 
-  /// Fetches real-world nearby places of interest up to 4km radius using OpenStreetMap Overpass API
-  /// 100% on-device over mobile internet / Wi-Fi with instant offline cached fallback.
+  /// Fetches real-world nearby places and University Campus Blocks up to 4km radius using OpenStreetMap Overpass API
   Future<void> fetchNearbyLocations4km({bool force = false}) async {
     final now = DateTime.now();
     if (!force &&
@@ -278,20 +314,21 @@ class NameboardNavigationService {
     }
 
     _isLoadingNearby = true;
-    _notifyState("Discovering nearby places in 4km radius...");
+    _notifyState("Discovering university campus blocks & nearby places in 4km radius...");
 
     final lat = _currentLat;
     final lng = _currentLng;
 
-    // Overpass QL query covering hospitals, pharmacies, clinics, supermarkets, cafes, transit, banks, parks
+    // Overpass QL query covering university blocks, departments, libraries, hospitals, stores, transit
     final query = """
 [out:json][timeout:12];
 (
-  node["amenity"~"hospital|pharmacy|clinic|bank|atm|restaurant|cafe|fast_food|bus_station"](around:4000, $lat, $lng);
+  node["amenity"~"university|college|school|library|canteen|hospital|pharmacy|clinic|bank|atm|restaurant|cafe|bus_station"](around:4000, $lat, $lng);
+  node["building"~"university|college|academic|faculty|dormitory"](around:4000, $lat, $lng);
   node["shop"~"supermarket|convenience|bakery|chemist|department_store|general"](around:4000, $lat, $lng);
   node["tourism"~"attraction|hotel|museum|viewpoint"](around:4000, $lat, $lng);
   node["highway"~"bus_stop|station"](around:4000, $lat, $lng);
-  node["leisure"~"park|garden"](around:4000, $lat, $lng);
+  node["leisure"~"park|garden|sports_centre"](around:4000, $lat, $lng);
 );
 out center 60;
 """;
@@ -338,8 +375,14 @@ out center 60;
     }
 
     if (success && fetched.isNotEmpty) {
-      // Remove duplicates by name and sort by proximity
       final Map<String, NavTargetDestination> uniqueByName = {};
+      
+      // Add custom saved places first
+      for (final saved in _customSavedPlaces) {
+        final key = "${saved.name.toLowerCase()}_${saved.category}";
+        uniqueByName[key] = saved.withLiveTelemetry(lat, lng);
+      }
+
       for (final item in fetched) {
         final key = "${item.name.toLowerCase()}_${item.category}";
         if (!uniqueByName.containsKey(key) ||
@@ -353,37 +396,40 @@ out center 60;
       _lastNearbyFetchTime = now;
       _lastFetchLat = lat;
       _lastFetchLng = lng;
-      debugPrint("[NavigationService] Discovered ${_nearbyPlaces4km.length} nearby places within 4km radius.");
+      debugPrint("[NavigationService] Discovered ${_nearbyPlaces4km.length} campus blocks & places within 4km radius.");
     } else {
-      // Fallback to enriched offline defaults updated with real-time GPS telemetry
-      debugPrint("[NavigationService] Using offline curated destination repository with live GPS telemetry.");
+      debugPrint("[NavigationService] Using offline curated university destination repository.");
       _updateOfflineFallbackDistances();
     }
 
     _isLoadingNearby = false;
     _notifyState(
       _nearbyPlaces4km.isNotEmpty
-          ? "${_nearbyPlaces4km.length} places found within 4km"
-          : "Nearby places ready",
+          ? "${_nearbyPlaces4km.length} campus blocks & places found within 4km"
+          : "Nearby campus places ready",
     );
   }
 
   void _updateOfflineFallbackDistances() {
-    _nearbyPlaces4km = NavTargetDestination.defaultDestinations
+    final all = [..._customSavedPlaces, ...NavTargetDestination.defaultDestinations];
+    _nearbyPlaces4km = all
         .map((d) => d.withLiveTelemetry(_currentLat, _currentLng))
         .toList();
     _nearbyPlaces4km.sort((a, b) => (a.distanceMeters ?? 0).compareTo(b.distanceMeters ?? 0));
   }
 
   void _updateAllNearbyDistances() {
-    if (_nearbyPlaces4km.isEmpty) return;
+    if (_nearbyPlaces4km.isEmpty) {
+      _updateOfflineFallbackDistances();
+      return;
+    }
     _nearbyPlaces4km = _nearbyPlaces4km
         .map((d) => d.withLiveTelemetry(_currentLat, _currentLng))
         .toList();
     _nearbyPlaces4km.sort((a, b) => (a.distanceMeters ?? 0).compareTo(b.distanceMeters ?? 0));
   }
 
-  /// Calculates real-time distance, bearing, clock direction and triggers milestone speech
+  /// Calculates real-time distance, bearing, clock direction and triggers campus milestone announcements
   void _evaluateNavigationPhase() {
     if (_activeDestination == null) return;
 
@@ -392,23 +438,26 @@ out center 60;
     final bearingDeg = dest.bearingFrom(_currentLat, _currentLng);
     _clockVector = NavTargetDestination.calculateClockVector(bearingDeg);
 
-    if (_distanceToTarget <= 3.0) {
+    if (_distanceToTarget <= 3.5) {
       _currentPhase = NavigationPhase.arrived;
       _announceMilestone("arrived", "You have arrived at ${dest.name}. Destination reached.");
     } else if (_targetBoard != null && _targetBoard!.isTargetMatch) {
       _currentPhase = NavigationPhase.visualHoming;
-    } else if (_distanceToTarget <= 18.0) {
+    } else if (_distanceToTarget <= 15.0) {
       _currentPhase = NavigationPhase.nearFieldScanning;
-      _announceMilestone("near_field", "Within 15 meters. Scanning for ${dest.name} signboard with camera.");
+      _announceMilestone("near_field", "Within 15 meters of ${dest.name}. Scanning for block signboards with camera.");
+    } else if (_distanceToTarget <= 40.0) {
+      _currentPhase = NavigationPhase.midFieldApproach;
+      _announceMilestone("mid_field", "Approaching ${dest.name}. ${_distanceToTarget.toInt()} meters ahead at $_clockVector. Look for block entrance.");
     } else {
       _currentPhase = NavigationPhase.farFieldGps;
       // Distance countdown milestones
-      if (_distanceToTarget <= 50.0) {
-        _announceMilestone("50m", "${dest.name} is 50 meters ahead at $_clockVector.");
+      if (_distanceToTarget <= 60.0) {
+        _announceMilestone("60m", "${dest.name} is 60 meters ahead at $_clockVector.");
       } else if (_distanceToTarget <= 100.0) {
         _announceMilestone("100m", "${dest.name} is 100 meters ahead at $_clockVector.");
-      } else if (_distanceToTarget <= 250.0) {
-        _announceMilestone("250m", "${dest.name} is 250 meters ahead at $_clockVector.");
+      } else if (_distanceToTarget <= 200.0) {
+        _announceMilestone("200m", "${dest.name} is 200 meters away at $_clockVector.");
       } else if (_distanceToTarget <= 500.0) {
         _announceMilestone("500m", "${dest.name} is 500 meters away at $_clockVector.");
       } else if (_distanceToTarget <= 1000.0) {
@@ -445,7 +494,7 @@ out center 60;
       if (_distanceToTarget <= 12.0) {
         final mockBoard = SightedNameboard(
           text: _activeDestination!.name,
-          confidence: 0.94,
+          confidence: 0.96,
           similarity: 0.98,
           distanceMeters: math.max(1.5, _distanceToTarget * 0.7),
           clockZone: "12 o'clock",
@@ -462,7 +511,7 @@ out center 60;
 
         _announceMilestone(
           "board_sighted",
-          "${_activeDestination!.name} signboard sighted directly ahead at 12 o'clock. Walk forward.",
+          "${_activeDestination!.name} signboard sighted directly ahead at 12 o'clock. Walk forward to enter.",
         );
       }
     } catch (e) {
@@ -486,6 +535,7 @@ out center 60;
         targetBoard: _targetBoard,
         visibleBoards: _allVisibleBoards,
         nearbyPlaces: _nearbyPlaces4km,
+        savedPlaces: _customSavedPlaces,
         isLoadingNearby: _isLoadingNearby,
         statusMessage: message,
       ));

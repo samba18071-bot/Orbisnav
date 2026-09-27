@@ -1141,6 +1141,93 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     );
   }
 
+  void _showSaveCustomPlaceDialog() {
+    final nameController = TextEditingController();
+    final blockController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF131B2A),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: Color(0xFF00E5FF), width: 1.2),
+        ),
+        title: const Row(
+          children: [
+            Icon(Icons.add_location_alt, color: Color(0xFFFFD600), size: 20),
+            SizedBox(width: 8),
+            Text("Pin Location / Room", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "Pin your current GPS coordinates as a designated campus block, classroom, lab, or office for quick navigation.",
+              style: TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: nameController,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: InputDecoration(
+                labelText: "Place / Room Name *",
+                labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 12),
+                hintText: "e.g. Room 304, HOD Office, Robotics Lab",
+                hintStyle: const TextStyle(color: Colors.white30, fontSize: 12),
+                filled: true,
+                fillColor: const Color(0xFF1E293B),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: blockController,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: InputDecoration(
+                labelText: "Block / Building (Optional)",
+                labelStyle: const TextStyle(color: Color(0xFFFFD600), fontSize: 12),
+                hintText: "e.g. Block B - CSE, Science Block",
+                hintStyle: const TextStyle(color: Colors.white30, fontSize: 12),
+                filled: true,
+                fillColor: const Color(0xFF1E293B),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text("CANCEL", style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00E5FF),
+              foregroundColor: Colors.black,
+            ),
+            onPressed: () {
+              final name = nameController.text.trim();
+              if (name.isNotEmpty) {
+                final block = blockController.text.trim();
+                _navService.saveCurrentLocationAsCustomPlace(
+                  name: name,
+                  category: "Saved My Places",
+                  blockName: block.isNotEmpty ? block : null,
+                );
+                Navigator.of(ctx).pop();
+                setState(() {});
+              }
+            },
+            child: const Text("SAVE PIN", style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 4km Radius Nearby Destinations & Live Geolocation Explorer
   Widget _build4kmNearbyDestinationsCard() {
     final isNavigating = _navService.isNavigating;
@@ -1163,6 +1250,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         phaseColor = const Color(0xFF00E5FF);
         phaseTitle = "GPS GUIDANCE (Far-Field)";
         phaseIcon = Icons.gps_fixed;
+        break;
+      case NavigationPhase.midFieldApproach:
+        phaseColor = const Color(0xFF64FFDA);
+        phaseTitle = "CAMPUS ENTRANCE APPROACH";
+        phaseIcon = Icons.door_front_door_outlined;
         break;
       case NavigationPhase.nearFieldScanning:
         phaseColor = const Color(0xFFFFD600);
@@ -1224,7 +1316,12 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: const Icon(Icons.add_location_alt, size: 18, color: Color(0xFFFFD600)),
+                tooltip: "Pin Current GPS Location / Room",
+                onPressed: _showSaveCustomPlaceDialog,
+              ),
               IconButton(
                 icon: isLoading
                     ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00E5FF)))
@@ -1252,10 +1349,23 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Expanded(
-                        child: Text(
-                          dest.name.toUpperCase(),
-                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
-                          overflow: TextOverflow.ellipsis,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              dest.name.toUpperCase(),
+                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (dest.blockName != null && dest.blockName!.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2.0),
+                                child: Text(
+                                  "🏛️ Building: ${dest.blockName!}",
+                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFFFD600)),
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                       Container(
@@ -1376,6 +1486,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             child: Row(
               children: [
                 "All",
+                "University & Campus",
+                "Saved My Places",
                 "Medical & Health",
                 "Food & Dining",
                 "Groceries & Shopping",
@@ -1391,7 +1503,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                     selectedColor: const Color(0xFF00E5FF).withValues(alpha: 0.3),
                     backgroundColor: const Color(0xFF1E293B),
                     label: Text(
-                      cat == "All" ? "All (4km)" : cat,
+                      cat == "All" ? "All (4km)" : (cat == "University & Campus" ? "🎓 University & Campus" : (cat == "Saved My Places" ? "📍 My Saved Pins" : cat)),
                       style: TextStyle(
                         fontSize: 11,
                         color: isSelected ? const Color(0xFF00E5FF) : Colors.white70,
@@ -1425,18 +1537,20 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             ListView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: math.min(filteredPlaces.length, 8),
+              itemCount: math.min(filteredPlaces.length, 10),
               itemBuilder: (context, index) {
                 final item = filteredPlaces[index];
                 final isCurrentTarget = dest?.id == item.id;
 
                 IconData catIcon = Icons.place;
-                if (item.category == "Medical & Health") catIcon = Icons.local_hospital;
-                if (item.category == "Food & Dining") catIcon = Icons.restaurant;
-                if (item.category == "Groceries & Shopping") catIcon = Icons.shopping_cart;
-                if (item.category == "Transit & Stations") catIcon = Icons.directions_bus;
-                if (item.category == "Banks & ATMs") catIcon = Icons.account_balance;
-                if (item.category == "Landmarks & Parks") catIcon = Icons.park;
+                if (item.category == "University & Campus" || item.isCampusBuilding) catIcon = Icons.school;
+                else if (item.category == "Saved My Places" || item.isCustomSaved) catIcon = Icons.push_pin;
+                else if (item.category == "Medical & Health") catIcon = Icons.local_hospital;
+                else if (item.category == "Food & Dining") catIcon = Icons.restaurant;
+                else if (item.category == "Groceries & Shopping") catIcon = Icons.shopping_cart;
+                else if (item.category == "Transit & Stations") catIcon = Icons.directions_bus;
+                else if (item.category == "Banks & ATMs") catIcon = Icons.account_balance;
+                else if (item.category == "Landmarks & Parks") catIcon = Icons.park;
 
                 return Container(
                   margin: const EdgeInsets.only(bottom: 6),
@@ -1452,16 +1566,37 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   ),
                   child: Row(
                     children: [
-                      Icon(catIcon, size: 18, color: const Color(0xFF00E5FF)),
+                      Icon(catIcon, size: 18, color: item.isCampusBuilding ? const Color(0xFFFFD600) : const Color(0xFF00E5FF)),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              item.name,
-                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
-                              overflow: TextOverflow.ellipsis,
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    item.name,
+                                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (item.blockName != null && item.blockName!.isNotEmpty) ...[
+                                  const SizedBox(width: 4),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFD600).withValues(alpha: 0.2),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: const Color(0xFFFFD600).withValues(alpha: 0.6), width: 0.8),
+                                    ),
+                                    child: Text(
+                                      item.blockName!,
+                                      style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFFFFD600)),
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
                             if (item.address != null)
                               Text(
