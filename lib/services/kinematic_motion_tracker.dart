@@ -5,6 +5,8 @@ import 'online_obstacle_detector.dart';
 enum ObjectMotionType {
   approachingTowardsUser, // Closing in rapidly (e.g., person walking towards you, car approaching)
   movingAwayFromUser,     // Moving away (e.g., person walking away)
+  crossingLeftToRight,    // Moving laterally across view from left to right
+  crossingRightToLeft,    // Moving laterally across view from right to left
   overheadHazard,         // Low-hanging branch / awning / head-level protrusion
   stationaryAhead,        // Static obstacle in path (e.g., chair, table, pole)
 }
@@ -14,6 +16,7 @@ class _TrackHistoryPoint {
   final double distanceMeters;
   final double xCenter;
   final double yMin;
+  final double yMax;
   final double bboxHeight;
   final DateTime timestamp;
 
@@ -21,13 +24,14 @@ class _TrackHistoryPoint {
     required this.distanceMeters,
     required this.xCenter,
     required this.yMin,
+    required this.yMax,
     required this.bboxHeight,
     required this.timestamp,
   });
 }
 
 /// KinematicMotionTracker: Computes real-time motion vectors, radial velocities,
-/// approach trajectories, and vertical obstacle levels across video frames.
+/// lateral crossing trajectories, and approach dynamics across camera frames.
 class KinematicMotionTracker {
   static final KinematicMotionTracker _instance =
       KinematicMotionTracker._internal();
@@ -37,6 +41,10 @@ class KinematicMotionTracker {
 
   // Track map: trackKey -> List of historical points
   final Map<String, List<_TrackHistoryPoint>> _tracks = {};
+
+  // Global scene motion energy (0.0 to 1.0)
+  double _sceneMotionEnergy = 0.0;
+  double get sceneMotionEnergy => _sceneMotionEnergy;
 
   /// Updates and enriches obstacles with dynamic motion kinematics and descriptive phrases.
   List<DetectedObstacle> enrichWithKinematics(List<DetectedObstacle> rawObstacles) {
@@ -49,6 +57,8 @@ class KinematicMotionTracker {
       return now.difference(history.last.timestamp).inMilliseconds > 3500;
     });
 
+    double totalTrackMotion = 0.0;
+
     for (final obs in rawObstacles) {
       final trackKey = "${obs.label.toLowerCase().trim()}_${obs.clockPosition.toLowerCase().trim()}";
 
@@ -56,6 +66,7 @@ class KinematicMotionTracker {
         distanceMeters: obs.distanceMeters,
         xCenter: (obs.xMin + obs.xMax) / 2.0,
         yMin: obs.yMin,
+        yMax: obs.yMax,
         bboxHeight: (obs.yMax - obs.yMin).abs(),
         timestamp: now,
       );
@@ -68,19 +79,23 @@ class KinematicMotionTracker {
         history.removeAt(0);
       }
 
-      // Compute velocity (meters per second)
+      // Compute radial velocity (m/s) and lateral velocity (norm/s)
       double velocityMps = 0.0;
+      double lateralVel = 0.0;
       double bboxGrowthRate = 0.0;
 
       if (history.length >= 2) {
         final oldest = history.first;
         final deltaSeconds = now.difference(oldest.timestamp).inMilliseconds / 1000.0;
 
-        if (deltaSeconds > 0.25) {
-          // Negative velocity = closing distance (approaching)
-          // Positive velocity = increasing distance (moving away)
+        if (deltaSeconds > 0.20) {
+          // Negative radial velocity = closing distance (approaching)
+          // Positive radial velocity = increasing distance (moving away)
           velocityMps = (currentPoint.distanceMeters - oldest.distanceMeters) / deltaSeconds;
+          lateralVel = (currentPoint.xCenter - oldest.xCenter) / deltaSeconds;
           bboxGrowthRate = (currentPoint.bboxHeight - oldest.bboxHeight) / deltaSeconds;
+
+          totalTrackMotion += velocityMps.abs() + (lateralVel.abs() * 3.0);
         }
       }
 
@@ -91,6 +106,7 @@ class KinematicMotionTracker {
         yMin: obs.yMin,
         yMax: obs.yMax,
         velocityMps: velocityMps,
+        lateralVel: lateralVel,
         bboxGrowthRate: bboxGrowthRate,
         currentPriority: obs.priority,
       );
@@ -108,8 +124,12 @@ class KinematicMotionTracker {
         clockPosition: obs.clockPosition,
         motionType: motionResult.motionType,
         detailedDescription: motionResult.detailedDescription,
+        velocityMps: double.parse(velocityMps.clamp(-6.0, 6.0).toStringAsFixed(1)),
       ));
     }
+
+    // Update global scene motion energy
+    _sceneMotionEnergy = rawObstacles.isEmpty ? 0.0 : (totalTrackMotion / rawObstacles.length).clamp(0.0, 1.0);
 
     return enriched;
   }
@@ -121,6 +141,7 @@ class KinematicMotionTracker {
     required double yMin,
     required double yMax,
     required double velocityMps,
+    required double lateralVel,
     required double bboxGrowthRate,
     required AudioPriority currentPriority,
   }) {
@@ -134,13 +155,35 @@ class KinematicMotionTracker {
     AudioPriority priority = currentPriority;
     double computedTtc = distanceMeters / 1.1;
 
-    // 1. Detect Overhead / Low-Hanging Branch Hazards
+    // 1. Detect Overhead / Low-Hanging Protrusions
     if (isBranchOrOverhead && yMin < 0.20 && distanceMeters < 3.0) {
       motionType = ObjectMotionType.overheadHazard;
       motionPhrase = "Low-hanging branch overhead";
       priority = AudioPriority.level0Critical;
     }
-    // 2. Approaching Dynamics (Closing distance faster than 0.25 m/s or expanding bbox)
+    // 2. Lateral Crossing Dynamics (Moving left-to-right or right-to-left)
+    else if (lateralVel > 0.18) {
+      motionType = ObjectMotionType.crossingLeftToRight;
+      if (isPerson) {
+        motionPhrase = "Person crossing left to right";
+      } else if (isVehicle) {
+        motionPhrase = "Vehicle crossing left to right";
+      } else {
+        motionPhrase = "$label moving left to right";
+      }
+      priority = distanceMeters < 2.5 ? AudioPriority.level1Safety : AudioPriority.level2Navigation;
+    } else if (lateralVel < -0.18) {
+      motionType = ObjectMotionType.crossingRightToLeft;
+      if (isPerson) {
+        motionPhrase = "Person crossing right to left";
+      } else if (isVehicle) {
+        motionPhrase = "Vehicle crossing right to left";
+      } else {
+        motionPhrase = "$label moving right to left";
+      }
+      priority = distanceMeters < 2.5 ? AudioPriority.level1Safety : AudioPriority.level2Navigation;
+    }
+    // 3. Approaching Dynamics (Closing distance faster than 0.28 m/s or expanding bbox)
     else if (velocityMps < -0.28 || bboxGrowthRate > 0.08) {
       motionType = ObjectMotionType.approachingTowardsUser;
       final approachSpeed = velocityMps.abs();
@@ -148,7 +191,7 @@ class KinematicMotionTracker {
 
       if (isPerson) {
         motionPhrase = "Person is walking towards you";
-        priority = distanceMeters < 3.0 ? AudioPriority.level0Critical : AudioPriority.level1Safety;
+        priority = distanceMeters < 2.5 ? AudioPriority.level0Critical : AudioPriority.level1Safety;
       } else if (isVehicle) {
         motionPhrase = "Vehicle is approaching you";
         priority = AudioPriority.level0Critical;
@@ -157,7 +200,7 @@ class KinematicMotionTracker {
         priority = distanceMeters < 2.0 ? AudioPriority.level0Critical : AudioPriority.level1Safety;
       }
     }
-    // 3. Moving Away Dynamics (Distance increasing faster than 0.25 m/s)
+    // 4. Moving Away Dynamics (Distance increasing faster than 0.28 m/s)
     else if (velocityMps > 0.28) {
       motionType = ObjectMotionType.movingAwayFromUser;
       if (isPerson) {
@@ -171,7 +214,7 @@ class KinematicMotionTracker {
         priority = AudioPriority.level2Navigation;
       }
     }
-    // 4. Stationary / Standard Proximity
+    // 5. Stationary / Standard Proximity
     else {
       motionType = ObjectMotionType.stationaryAhead;
       if (isPerson) {
@@ -193,6 +236,7 @@ class KinematicMotionTracker {
 
   void reset() {
     _tracks.clear();
+    _sceneMotionEnergy = 0.0;
   }
 }
 
