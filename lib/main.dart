@@ -10,6 +10,7 @@ import 'services/on_device_obstacle_detector.dart';
 import 'services/kinematic_motion_tracker.dart';
 import 'services/cloud_ai_vision_service.dart';
 import 'services/nameboard_navigation_service.dart';
+import 'models/navigation_destination.dart';
 
 List<CameraDescription> _cameras = [];
 
@@ -104,7 +105,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   StreamSubscription<NavigationStatusState>? _navSubscription;
   NavigationStatusState? _navState;
   final TextEditingController _destinationInputController = TextEditingController();
-  String _selectedCategoryFilter = "All";
 
   // System States
   final double _tempC = 37.2;
@@ -1279,16 +1279,17 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         break;
     }
 
-    // Filter places by selected category and search text
+    // Filter places by search text (Only when user explicitly searches)
     final queryText = _destinationInputController.text.trim().toLowerCase();
-    final filteredPlaces = places.where((p) {
-      final matchesCategory = _selectedCategoryFilter == "All" || p.category == _selectedCategoryFilter;
-      final matchesQuery = queryText.isEmpty ||
-          p.name.toLowerCase().contains(queryText) ||
-          p.category.toLowerCase().contains(queryText) ||
-          (p.address != null && p.address!.toLowerCase().contains(queryText));
-      return matchesCategory && matchesQuery;
-    }).toList();
+    final filteredPlaces = queryText.isEmpty
+        ? <NavTargetDestination>[]
+        : places.where((p) {
+            return p.name.toLowerCase().contains(queryText) ||
+                p.category.toLowerCase().contains(queryText) ||
+                (p.blockName != null && p.blockName!.toLowerCase().contains(queryText)) ||
+                (p.address != null && p.address!.toLowerCase().contains(queryText)) ||
+                p.aliases.any((a) => a.toLowerCase().contains(queryText));
+          }).toList();
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1314,7 +1315,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                     const SizedBox(width: 8),
                     const Flexible(
                       child: Text(
-                        "NEARBY DESTINATIONS (4KM RADIUS)",
+                        "CAMPUS & DESTINATION NAVIGATION",
                         style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.1),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -1332,7 +1333,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                 icon: isLoading
                     ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00E5FF)))
                     : const Icon(Icons.refresh, size: 18, color: Color(0xFF00E5FF)),
-                tooltip: "Refresh 4km Nearby Locations",
+                tooltip: "Refresh GPS & Locations",
                 onPressed: isLoading ? null : () => _navService.fetchNearbyLocations4km(force: true),
               ),
             ],
@@ -1486,172 +1487,135 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           ),
           const SizedBox(height: 10),
 
-          // Category Filter Chips
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                "All",
-                "University & Campus",
-                "Saved My Places",
-                "Medical & Health",
-                "Food & Dining",
-                "Groceries & Shopping",
-                "Transit & Stations",
-                "Banks & ATMs",
-                "Landmarks & Parks",
-              ].map((cat) {
-                final isSelected = _selectedCategoryFilter == cat;
-                return Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: FilterChip(
-                    selected: isSelected,
-                    selectedColor: const Color(0xFF00E5FF).withValues(alpha: 0.3),
-                    backgroundColor: const Color(0xFF1E293B),
-                    label: Text(
-                      cat == "All" ? "All (4km)" : (cat == "University & Campus" ? "🎓 University & Campus" : (cat == "Saved My Places" ? "📍 My Saved Pins" : cat)),
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: isSelected ? const Color(0xFF00E5FF) : Colors.white70,
-                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                      ),
-                    ),
-                    onSelected: (_) {
-                      setState(() {
-                        _selectedCategoryFilter = cat;
-                      });
-                    },
+          // Search Results List (Only displayed when user searches for a destination)
+          if (queryText.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            if (filteredPlaces.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Center(
+                  child: Text(
+                    isLoading ? "Searching nearby locations..." : "No places found matching '$queryText'.",
+                    style: const TextStyle(fontSize: 12, color: Colors.white54),
                   ),
-                );
-              }).toList(),
-            ),
-          ),
-          const SizedBox(height: 10),
-
-          // Discovered Nearby POIs List
-          if (filteredPlaces.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Center(
-                child: Text(
-                  isLoading ? "Discovering nearby locations within 4km..." : "No places found matching criteria.",
-                  style: const TextStyle(fontSize: 12, color: Colors.white54),
                 ),
-              ),
-            )
-          else
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: math.min(filteredPlaces.length, 10),
-              itemBuilder: (context, index) {
-                final item = filteredPlaces[index];
-                final isCurrentTarget = dest?.id == item.id;
+              )
+            else
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: math.min(filteredPlaces.length, 6),
+                itemBuilder: (context, index) {
+                  final item = filteredPlaces[index];
+                  final isCurrentTarget = dest?.id == item.id;
 
-                IconData catIcon = Icons.place;
-                if (item.category == "University & Campus" || item.isCampusBuilding) catIcon = Icons.school;
-                else if (item.category == "Saved My Places" || item.isCustomSaved) catIcon = Icons.push_pin;
-                else if (item.category == "Medical & Health") catIcon = Icons.local_hospital;
-                else if (item.category == "Food & Dining") catIcon = Icons.restaurant;
-                else if (item.category == "Groceries & Shopping") catIcon = Icons.shopping_cart;
-                else if (item.category == "Transit & Stations") catIcon = Icons.directions_bus;
-                else if (item.category == "Banks & ATMs") catIcon = Icons.account_balance;
-                else if (item.category == "Landmarks & Parks") catIcon = Icons.park;
+                  IconData catIcon = Icons.place;
+                  if (item.category == "University & Campus" || item.isCampusBuilding) catIcon = Icons.school;
+                  else if (item.category == "Saved My Places" || item.isCustomSaved) catIcon = Icons.push_pin;
+                  else if (item.category == "Medical & Health") catIcon = Icons.local_hospital;
+                  else if (item.category == "Food & Dining") catIcon = Icons.restaurant;
+                  else if (item.category == "Groceries & Shopping") catIcon = Icons.shopping_cart;
+                  else if (item.category == "Transit & Stations") catIcon = Icons.directions_bus;
+                  else if (item.category == "Banks & ATMs") catIcon = Icons.account_balance;
+                  else if (item.category == "Landmarks & Parks") catIcon = Icons.park;
 
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 6),
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: isCurrentTarget
-                        ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
-                        : const Color(0xFF1E293B),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: isCurrentTarget ? const Color(0xFF00E5FF) : Colors.white10,
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(catIcon, size: 18, color: item.isCampusBuilding ? const Color(0xFFFFD600) : const Color(0xFF00E5FF)),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    item.name,
-                                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                if (item.blockName != null && item.blockName!.isNotEmpty) ...[
-                                  const SizedBox(width: 4),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFFFD600).withValues(alpha: 0.2),
-                                      borderRadius: BorderRadius.circular(4),
-                                      border: Border.all(color: const Color(0xFFFFD600).withValues(alpha: 0.6), width: 0.8),
-                                    ),
-                                    child: Text(
-                                      item.blockName!,
-                                      style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFFFFD600)),
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                            if (item.address != null)
-                              Text(
-                                item.address!,
-                                style: const TextStyle(fontSize: 10, color: Colors.white54),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                          ],
-                        ),
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: isCurrentTarget
+                          ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
+                          : const Color(0xFF1E293B),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: isCurrentTarget ? const Color(0xFF00E5FF) : Colors.white10,
                       ),
-                      const SizedBox(width: 6),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              "${item.formattedDistance} • ${item.clockZone ?? '12 o\'clock'}",
-                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF00E5FF)),
-                            ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(catIcon, size: 18, color: item.isCampusBuilding ? const Color(0xFFFFD600) : const Color(0xFF00E5FF)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      item.name,
+                                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (item.blockName != null && item.blockName!.isNotEmpty) ...[
+                                    const SizedBox(width: 4),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFFFD600).withValues(alpha: 0.2),
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(color: const Color(0xFFFFD600).withValues(alpha: 0.6), width: 0.8),
+                                      ),
+                                      child: Text(
+                                        item.blockName!,
+                                        style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFFFFD600)),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              if (item.address != null)
+                                Text(
+                                  item.address!,
+                                  style: const TextStyle(fontSize: 10, color: Colors.white54),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                            ],
                           ),
-                          const SizedBox(height: 4),
-                          GestureDetector(
-                            onTap: () {
-                              _navService.startNavigation(item);
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        ),
+                        const SizedBox(width: 6),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                               decoration: BoxDecoration(
-                                color: isCurrentTarget ? Colors.green : const Color(0xFF00E5FF),
+                                color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               child: Text(
-                                isCurrentTarget ? "ACTIVE" : "NAVIGATE",
-                                style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.black),
+                                "${item.formattedDistance} • ${item.clockZone ?? '12 o\'clock'}",
+                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF00E5FF)),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
+                            const SizedBox(height: 4),
+                            GestureDetector(
+                              onTap: () {
+                                _navService.startNavigation(item);
+                                _destinationInputController.clear();
+                                setState(() {});
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: isCurrentTarget ? Colors.green : const Color(0xFF00E5FF),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  isCurrentTarget ? "ACTIVE" : "NAVIGATE",
+                                  style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.black),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+          ],
         ],
       ),
     );
