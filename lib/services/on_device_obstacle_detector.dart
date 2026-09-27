@@ -646,10 +646,9 @@ class OnDeviceObstacleDetector {
       _announcedDistances[key] = topHazard.distanceMeters;
       _wasHazardSpoken = true;
 
-      final distStr = "${topHazard.distanceMeters.toStringAsFixed(1)} meters";
       final speechText = topHazard.priority == AudioPriority.level0Critical
-          ? "Caution! ${topHazard.label} ahead at ${topHazard.clockPosition}, $distStr."
-          : "${topHazard.label} at ${topHazard.clockPosition}, $distStr.";
+          ? "Caution! ${topHazard.speechAnnouncement}"
+          : topHazard.speechAnnouncement;
 
       AudioMutexController().speak(
         text: speechText,
