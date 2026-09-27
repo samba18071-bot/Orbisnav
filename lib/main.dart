@@ -94,6 +94,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   String _visionStatus = "Standalone Edge AI: Ready";
   List<DetectedObstacle> _activeObstacles = [];
   DetectedObstacle? _primaryHazard;
+  OptimalPathRecommendation? _optimalPath;
   Timer? _visionStreamTimer;
 
   // Multimodal AI Scene Comprehension State
@@ -140,6 +141,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           _visionStatus = result.statusMessage;
           _activeObstacles = result.obstacles;
           _primaryHazard = result.highestHazard;
+          _optimalPath = result.optimalPath;
         });
       }
     });
@@ -477,11 +479,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             _buildPortraitCameraViewfinder(hasCriticalHazard),
             const SizedBox(height: 14),
 
-            // 3. Dedicated Motion Detection & Kinematics Radar
+            // 3. Real-Time Optimal Path Navigation Corridor Guidance
+            _buildOptimalPathGuidanceCard(hasCriticalHazard),
+            const SizedBox(height: 14),
+
+            // 4. Dedicated Motion Detection & Kinematics Radar
             _buildMotionKinematicsCard(),
             const SizedBox(height: 14),
 
-            // 4. On-Device Obstacle Detection Status & Hazard List
+            // 5. On-Device Obstacle Detection Status & Hazard List
             _buildObstacleDetectionCard(hasCriticalHazard),
             const SizedBox(height: 14),
 
@@ -775,6 +781,136 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           ),
         );
       },
+    );
+  }
+
+  /// Dedicated Real-Time Optimal Path Navigation Corridor Guidance Card
+  Widget _buildOptimalPathGuidanceCard(bool hasCriticalHazard) {
+    final opt = _optimalPath ?? OptimalPathRecommendation.computeOptimalPath(_activeObstacles);
+
+    IconData directionIcon;
+    Color directionColor;
+    String badgeText;
+
+    switch (opt.direction) {
+      case OptimalCorridorDirection.straightAhead:
+        directionIcon = Icons.navigation;
+        directionColor = const Color(0xFF00E676);
+        badgeText = "PATH CLEAR (12 O'CLOCK)";
+        break;
+      case OptimalCorridorDirection.veerLeft:
+        directionIcon = Icons.turn_left;
+        directionColor = const Color(0xFF00E5FF);
+        badgeText = "VEER LEFT (10 O'CLOCK)";
+        break;
+      case OptimalCorridorDirection.veerRight:
+        directionIcon = Icons.turn_right;
+        directionColor = const Color(0xFF00E5FF);
+        badgeText = "VEER RIGHT (2 O'CLOCK)";
+        break;
+      case OptimalCorridorDirection.blockedHold:
+        directionIcon = Icons.pan_tool_rounded;
+        directionColor = const Color(0xFFFF1744);
+        badgeText = "PATH BLOCKED (HOLD)";
+        break;
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: directionColor.withValues(alpha: 0.6),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: directionColor.withValues(alpha: 0.15),
+            blurRadius: 10,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.alt_route, color: directionColor, size: 18),
+                  const SizedBox(width: 8),
+                  const Text(
+                    "REAL-TIME OPTIMAL PATH GUIDANCE",
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: directionColor.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: directionColor.withValues(alpha: 0.6)),
+                ),
+                child: Text(
+                  badgeText,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: directionColor,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: directionColor.withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: directionColor, width: 2.0),
+                ),
+                child: Icon(directionIcon, color: directionColor, size: 26),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      opt.voiceInstruction,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "Clearance: ${opt.clearanceMeters.toStringAsFixed(1)}m • Vector: ${opt.clockDirection}",
+                      style: const TextStyle(fontSize: 11, color: Colors.white70),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: "Speak Optimal Path",
+                icon: const Icon(Icons.volume_up, color: Color(0xFF00E5FF), size: 22),
+                onPressed: () {
+                  _audioMutex.speak(
+                    text: opt.voiceInstruction,
+                    priority: AudioPriority.level1Safety,
+                    force: true,
+                    haptic: true,
+                  );
+                },
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 

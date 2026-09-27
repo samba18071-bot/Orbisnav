@@ -653,9 +653,14 @@ class OnDeviceObstacleDetector {
       _announcedDistances[key] = topHazard.distanceMeters;
       _wasHazardSpoken = true;
 
-      final speechText = topHazard.priority == AudioPriority.level0Critical
+      String speechText = topHazard.priority == AudioPriority.level0Critical
           ? "Caution! ${topHazard.speechAnnouncement}"
           : topHazard.speechAnnouncement;
+
+      // Real-Time Optimal Path Navigation Voice Integration
+      if (cycle.optimalPath.isPathBlocked && topHazard.distanceMeters < 3.0) {
+        speechText = "$speechText ${cycle.optimalPath.voiceInstruction}";
+      }
 
       AudioMutexController().speak(
         text: speechText,

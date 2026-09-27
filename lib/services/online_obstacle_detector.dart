@@ -73,6 +73,133 @@ class DetectedObstacle {
   }
 }
 
+/// Real-Time Optimal Navigation Corridor Direction
+enum OptimalCorridorDirection {
+  straightAhead, // 12 o'clock
+  veerLeft,       // 10 o'clock
+  veerRight,      // 2 o'clock
+  blockedHold,    // Path completely obstructed
+}
+
+/// Real-Time Optimal Navigation Path calculated across spatial vision corridors
+class OptimalPathRecommendation {
+  final OptimalCorridorDirection direction;
+  final String clockDirection; // "12 o'clock", "10 o'clock", "2 o'clock", "Hold"
+  final String voiceInstruction; // e.g. "Veer right towards 2 o'clock - path clear"
+  final double clearanceMeters;
+  final bool isPathBlocked;
+
+  const OptimalPathRecommendation({
+    required this.direction,
+    required this.clockDirection,
+    required this.voiceInstruction,
+    required this.clearanceMeters,
+    required this.isPathBlocked,
+  });
+
+  /// Computes the optimal collision-free clearance path from active detected obstacles
+  static OptimalPathRecommendation computeOptimalPath(List<DetectedObstacle> obstacles) {
+    if (obstacles.isEmpty) {
+      return const OptimalPathRecommendation(
+        direction: OptimalCorridorDirection.straightAhead,
+        clockDirection: "12 o'clock",
+        voiceInstruction: "Path clear ahead. Continue straight.",
+        clearanceMeters: 6.0,
+        isPathBlocked: false,
+      );
+    }
+
+    double leftClearance = 6.0;
+    double centerClearance = 6.0;
+    double rightClearance = 6.0;
+
+    for (final obs in obstacles) {
+      final normX = (obs.xMin + obs.xMax) / 2.0;
+      final dist = obs.distanceMeters;
+
+      if (normX < 0.38 || obs.clockPosition.contains("9") || obs.clockPosition.contains("10")) {
+        if (dist < leftClearance) leftClearance = dist;
+      } else if (normX > 0.62 || obs.clockPosition.contains("2") || obs.clockPosition.contains("3")) {
+        if (dist < rightClearance) rightClearance = dist;
+      } else {
+        if (dist < centerClearance) centerClearance = dist;
+      }
+    }
+
+    // 1. Center direct path blocked or narrowed (< 2.5m)
+    if (centerClearance < 2.5) {
+      if (leftClearance > rightClearance && leftClearance >= 1.8) {
+        return OptimalPathRecommendation(
+          direction: OptimalCorridorDirection.veerLeft,
+          clockDirection: "10 o'clock",
+          voiceInstruction: "Step left towards 10 o'clock to bypass.",
+          clearanceMeters: leftClearance,
+          isPathBlocked: true,
+        );
+      } else if (rightClearance >= 1.8) {
+        return OptimalPathRecommendation(
+          direction: OptimalCorridorDirection.veerRight,
+          clockDirection: "2 o'clock",
+          voiceInstruction: "Step right towards 2 o'clock to bypass.",
+          clearanceMeters: rightClearance,
+          isPathBlocked: true,
+        );
+      } else if (leftClearance >= 1.3) {
+        return OptimalPathRecommendation(
+          direction: OptimalCorridorDirection.veerLeft,
+          clockDirection: "10 o'clock",
+          voiceInstruction: "Caution. Narrow passage on left at 10 o'clock.",
+          clearanceMeters: leftClearance,
+          isPathBlocked: true,
+        );
+      } else if (rightClearance >= 1.3) {
+        return OptimalPathRecommendation(
+          direction: OptimalCorridorDirection.veerRight,
+          clockDirection: "2 o'clock",
+          voiceInstruction: "Caution. Narrow passage on right at 2 o'clock.",
+          clearanceMeters: rightClearance,
+          isPathBlocked: true,
+        );
+      } else {
+        return const OptimalPathRecommendation(
+          direction: OptimalCorridorDirection.blockedHold,
+          clockDirection: "Hold",
+          voiceInstruction: "Path completely obstructed. Please stop and pause.",
+          clearanceMeters: 0.8,
+          isPathBlocked: true,
+        );
+      }
+    }
+
+    // 2. Center direct path is open (>= 2.5m)
+    if (leftClearance < 1.8 && rightClearance >= 2.0) {
+      return OptimalPathRecommendation(
+        direction: OptimalCorridorDirection.straightAhead,
+        clockDirection: "12 o'clock",
+        voiceInstruction: "Obstacle on left. Maintain center at 12 o'clock.",
+        clearanceMeters: centerClearance,
+        isPathBlocked: false,
+      );
+    } else if (rightClearance < 1.8 && leftClearance >= 2.0) {
+      return OptimalPathRecommendation(
+        direction: OptimalCorridorDirection.straightAhead,
+        clockDirection: "12 o'clock",
+        voiceInstruction: "Obstacle on right. Maintain center at 12 o'clock.",
+        clearanceMeters: centerClearance,
+        isPathBlocked: false,
+      );
+    }
+
+    return OptimalPathRecommendation(
+      direction: OptimalCorridorDirection.straightAhead,
+      clockDirection: "12 o'clock",
+      voiceInstruction: "Path directly ahead is clear.",
+      clearanceMeters: centerClearance,
+      isPathBlocked: false,
+    );
+  }
+}
+
 /// Result of an obstacle detection cycle
 class OnlineDetectionCycleResult {
   final List<DetectedObstacle> obstacles;
@@ -80,6 +207,7 @@ class OnlineDetectionCycleResult {
   final DateTime timestamp;
   final bool isOnlineSuccess;
   final String statusMessage;
+  final OptimalPathRecommendation optimalPath;
 
   OnlineDetectionCycleResult({
     required this.obstacles,
@@ -87,7 +215,8 @@ class OnlineDetectionCycleResult {
     required this.timestamp,
     required this.isOnlineSuccess,
     required this.statusMessage,
-  });
+    OptimalPathRecommendation? optimalPath,
+  }) : optimalPath = optimalPath ?? OptimalPathRecommendation.computeOptimalPath(obstacles);
 
   DetectedObstacle? get highestHazard {
     if (obstacles.isEmpty) return null;
