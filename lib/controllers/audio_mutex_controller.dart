@@ -279,6 +279,21 @@ class AudioMutexController {
     }
   }
 
+  /// Hard stops native TTS and clears speech queue completely
+  Future<void> stopAll() async {
+    _hazardClearanceTimer?.cancel();
+    _suspendedContext = null;
+    _queue.clear();
+    if (_currentActiveRequest != null && !_currentActiveRequest!.completer.isCompleted) {
+      _currentActiveRequest!.completer.complete(false);
+    }
+    _currentActiveRequest = null;
+    _activeSpeechController.add(null);
+    try {
+      await _channel.invokeMethod('stop');
+    } catch (_) {}
+  }
+
   /// Notifies the mutex that a hazard has cleared.
   /// Starts a 1.5s countdown before attempting to resume suspended Level 3 conversation.
   void notifyHazardCleared() {

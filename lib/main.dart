@@ -99,6 +99,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   // Multimodal AI Scene Comprehension State
   SceneAnalysisResult _latestSceneAnalysis = SceneAnalysisResult.empty();
   StreamSubscription<SceneAnalysisResult>? _sceneAnalysisSubscription;
+  bool _isExplainingSituation = false;
 
   // Destination & Landmark Nameboard Navigation (4km Radius Discovery)
   final NameboardNavigationService _navService = NameboardNavigationService();
@@ -267,6 +268,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       if (_isVisionActive &&
           _isCameraInitialized &&
           !_isProcessingFrame &&
+          !_isExplainingSituation &&
           _cameraController != null &&
           _cameraController!.value.isInitialized &&
           !_cameraController!.value.isTakingPicture) {
@@ -279,7 +281,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     if (_cameraController == null ||
         !_cameraController!.value.isInitialized ||
         _cameraController!.value.isTakingPicture ||
-        _isProcessingFrame) {
+        _isProcessingFrame ||
+        _isExplainingSituation) {
       return;
     }
 
@@ -311,6 +314,58 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       debugPrint("Frame processing error: $e");
     } finally {
       _isProcessingFrame = false;
+    }
+  }
+
+  /// Stops detection, clears speech queues, and provides an exclusive voice explanation of the situation.
+  Future<void> _explainSituation() async {
+    if (_isExplainingSituation) return;
+    if (_cameraController == null || !_cameraController!.value.isInitialized) return;
+
+    setState(() {
+      _isExplainingSituation = true;
+    });
+
+    // 1. Immediately pause ongoing obstacle detection and stop active audio alerts
+    _onDeviceDetector.setEnabled(false);
+    await _audioMutex.stopAll();
+
+    try {
+      // 2. Capture fresh scene snapshot
+      final img = await _cameraController!.takePicture();
+      final bytes = await img.readAsBytes();
+
+      // 3. Analyze real-time situation
+      final result = await _cloudAiService.analyzeScene(
+        bytes,
+        currentObstacles: _activeObstacles,
+        devicePitchDeg: _pitchDeg,
+        force: true,
+        speakResult: false,
+      );
+
+      final explanationText = result.sceneSummary.isNotEmpty
+          ? result.sceneSummary
+          : "Path directly ahead is clear of obstacles.";
+
+      // 4. Speak situation explanation with priority
+      await _audioMutex.speak(
+        text: explanationText,
+        priority: AudioPriority.level1Safety,
+        force: true,
+        haptic: false,
+      );
+    } catch (e) {
+      debugPrint("[SceneComprehension] Explain situation exception: $e");
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExplainingSituation = false;
+        });
+      }
+      // 5. Resume on-device obstacle detection
+      _onDeviceDetector.setEnabled(true);
+      _onDeviceDetector.forceRescan();
     }
   }
 
@@ -1116,31 +1171,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: isAnalyzing
+              onPressed: (_isExplainingSituation || isAnalyzing)
                   ? null
-                  : () async {
-                      if (_cameraController != null &&
-                          _cameraController!.value.isInitialized &&
-                          !_cameraController!.value.isTakingPicture) {
-                        try {
-                          final img = await _cameraController!.takePicture();
-                          final bytes = await img.readAsBytes();
-                          await _cloudAiService.analyzeScene(
-                            bytes,
-                            currentObstacles: _activeObstacles,
-                            devicePitchDeg: _pitchDeg,
-                            force: true,
-                            speakResult: true,
-                          );
-                        } catch (e) {
-                          debugPrint("[SceneComprehension] takePicture exception: $e");
-                        }
-                      }
-                    },
-              icon: isAnalyzing
+                  : () => _explainSituation(),
+              icon: (_isExplainingSituation || isAnalyzing)
                   ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.record_voice_over, size: 16),
-              label: Text(isAnalyzing ? "Analyzing Situation..." : "Explain Situation (Voice Narration)"),
+              label: Text((_isExplainingSituation || isAnalyzing)
+                  ? "Explaining Situation..."
+                  : "Explain Situation (Voice Narration)"),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF4F46E5),
                 foregroundColor: Colors.white,
