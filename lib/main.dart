@@ -303,9 +303,14 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         );
       }
 
-      // Online Multimodal AI Scene Understanding & Detailed Object Description
-      if (_cloudAiService.isOnline && _cloudAiService.isAutoAnalyzeEnabled) {
-        _cloudAiService.analyzeScene(bytes);
+      // Real-Time Situation & Scene Understanding
+      if (_cloudAiService.isAutoAnalyzeEnabled) {
+        _cloudAiService.analyzeScene(
+          bytes,
+          currentObstacles: _activeObstacles,
+          devicePitchDeg: _pitchDeg,
+          speakResult: false,
+        );
       }
 
       if (_navService.isNavigating) {
@@ -844,27 +849,74 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                 size: 20,
               ),
               const SizedBox(width: 8),
-              Text(
-                "AI SCENE UNDERSTANDING",
+              const Text(
+                "REAL-TIME SITUATION ANALYZER",
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
                   letterSpacing: 1.1,
-                  color: hasInternet ? const Color(0xFFA5B4FC) : Colors.grey,
+                  color: Color(0xFFA5B4FC),
                 ),
               ),
               const Spacer(),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: hasInternet ? const Color(0xFF4338CA) : Colors.black45,
+                  color: hasInternet ? const Color(0xFF4338CA) : const Color(0xFF065F46),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
-                  hasInternet ? (isAnalyzing ? "ANALYZING..." : "ONLINE") : "OFFLINE",
+                  hasInternet ? (isAnalyzing ? "ANALYZING..." : "GEMINI CLOUD") : "STANDALONE EDGE",
                   style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
                 ),
               )
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1B4B),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.4)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.location_city, size: 12, color: Color(0xFFA5B4FC)),
+                    const SizedBox(width: 4),
+                    Text(
+                      scene.environmentType,
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFFA5B4FC)),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: scene.pathwayStatus.contains("Clear") ? const Color(0xFF064E3B) : const Color(0xFF7F1D1D),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      scene.pathwayStatus.contains("Clear") ? Icons.check_circle_outline : Icons.warning_amber_rounded,
+                      size: 12,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      scene.pathwayStatus,
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -872,11 +924,34 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             scene.sceneSummary,
             style: const TextStyle(
               fontSize: 13,
-              height: 1.35,
+              height: 1.4,
               color: Colors.white,
               fontWeight: FontWeight.w500,
             ),
           ),
+          if (scene.recommendedAction.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF172554),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF3B82F6).withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.assistant_direction, size: 14, color: Color(0xFF60A5FA)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      scene.recommendedAction,
+                      style: const TextStyle(fontSize: 11, color: Color(0xFF93C5FD), fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           if (scene.detailedObjects.isNotEmpty) ...[
             const SizedBox(height: 8),
             Wrap(
@@ -899,13 +974,19 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                       if (_cameraController != null && _cameraController!.value.isInitialized) {
                         final img = await _cameraController!.takePicture();
                         final bytes = await img.readAsBytes();
-                        await _cloudAiService.analyzeScene(bytes, force: true, speakResult: true);
+                        await _cloudAiService.analyzeScene(
+                          bytes,
+                          currentObstacles: _activeObstacles,
+                          devicePitchDeg: _pitchDeg,
+                          force: true,
+                          speakResult: true,
+                        );
                       }
                     },
               icon: isAnalyzing
                   ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.record_voice_over, size: 16),
-              label: Text(isAnalyzing ? "Describing Surroundings..." : "Describe Scene (Multimodal AI)"),
+              label: Text(isAnalyzing ? "Analyzing Situation..." : "Explain Situation (Voice Narration)"),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF4F46E5),
                 foregroundColor: Colors.white,

@@ -4,45 +4,48 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../controllers/audio_mutex_controller.dart';
+import 'online_obstacle_detector.dart';
 
-/// Represents a deep Multimodal AI Scene Analysis result
+/// Represents a deep Multimodal & Edge AI Scene Analysis result.
 class SceneAnalysisResult {
-  final String sceneSummary;
+  final String environmentType; // e.g. "Indoor Office / Workstation", "Sidewalk"
+  final String sceneSummary;     // Full natural explanation
+  final String pathwayStatus;    // "Clear Path Ahead", "Caution: Path Obstructed"
   final List<String> detailedObjects;
-  final String pathwayStatus;
-  final String rawResponse;
+  final String recommendedAction;
   final int latencyMs;
   final DateTime timestamp;
   final bool isSuccess;
 
   SceneAnalysisResult({
+    required this.environmentType,
     required this.sceneSummary,
-    required this.detailedObjects,
     required this.pathwayStatus,
-    required this.rawResponse,
+    required this.detailedObjects,
+    required this.recommendedAction,
     required this.latencyMs,
     required this.timestamp,
     required this.isSuccess,
   });
 
   static SceneAnalysisResult empty() => SceneAnalysisResult(
-        sceneSummary: "Waiting for internet scene analysis...",
+        environmentType: "Scanning Scene...",
+        sceneSummary: "Scene analyzer is ready. Standalone edge perception active.",
+        pathwayStatus: "Path Clear",
         detailedObjects: [],
-        pathwayStatus: "Unknown",
-        rawResponse: "",
+        recommendedAction: "Maintain forward trajectory.",
         latencyMs: 0,
         timestamp: DateTime.now(),
         isSuccess: false,
       );
 }
 
-/// CloudAIVisionService: Online Multimodal Generative AI Perception Engine.
+/// AISceneAnalyzerService: Real-Time Situation Analysis & Natural Language Explanation.
 /// 
-/// When connected to the internet:
-/// - Provides deep semantic scene comprehension (context, spatial layout, environmental lighting).
-/// - Clearly details every object (colors, materials, actions, positions).
-/// - Identifies moving dynamic actors (e.g., "A person in a black jacket is walking towards you").
-/// - Governed by AudioMutexController (Level 3 priority: auto-preempted by Level 0/1 hazards).
+/// Combines:
+/// 1. Standalone Edge Neural Scene Synthesizer (Instant local contextual understanding from TFLite detections + IMU)
+/// 2. Multimodal Cloud Vision (Gemini 2.0 Flash / Cloud Vision API for deep visual descriptions when online)
+/// 3. Governed by AudioMutexController (Level 3 Context priority: auto-preempted by Level 0/1 hazards)
 class CloudAIVisionService {
   static final CloudAIVisionService _instance = CloudAIVisionService._internal();
   factory CloudAIVisionService() => _instance;
@@ -83,31 +86,41 @@ class CloudAIVisionService {
   }
 
   void _initConnectivity() {
-    Connectivity().checkConnectivity().then((results) {
-      _isOnline = results.any((r) => r != ConnectivityResult.none);
-    });
+    try {
+      Connectivity().checkConnectivity().then((results) {
+        _isOnline = results.any((r) => r != ConnectivityResult.none);
+      }).catchError((_) {
+        _isOnline = false;
+      });
 
-    Connectivity().onConnectivityChanged.listen((results) {
-      final wasOnline = _isOnline;
-      _isOnline = results.any((r) => r != ConnectivityResult.none);
-      if (_isOnline && !wasOnline) {
-        debugPrint("[CloudAIVisionService] 🌐 Internet connectivity detected. Multimodal AI ready.");
-      } else if (!_isOnline && wasOnline) {
-        debugPrint("[CloudAIVisionService] 📴 Internet lost. Reverting purely to offline ML Kit.");
-      }
-    });
+      Connectivity().onConnectivityChanged.listen((results) {
+        final wasOnline = _isOnline;
+        _isOnline = results.any((r) => r != ConnectivityResult.none);
+        if (_isOnline && !wasOnline) {
+          debugPrint("[AISceneAnalyzer] 🌐 Internet connectivity detected. Multimodal Cloud AI ready.");
+        } else if (!_isOnline && wasOnline) {
+          debugPrint("[AISceneAnalyzer] 📴 Internet lost. Standalone Edge Scene Synthesizer active.");
+        }
+      }, onError: (_) {
+        _isOnline = false;
+      });
+    } catch (_) {
+      _isOnline = false;
+    }
   }
 
-  /// Analyze the camera frame using Multimodal Generative AI (Gemini 2.0 / 1.5 Flash)
+  /// Analyze the real-time situation and formulate a natural language explanation
   Future<SceneAnalysisResult> analyzeScene(
     Uint8List jpegBytes, {
+    List<DetectedObstacle>? currentObstacles,
+    double devicePitchDeg = 0.0,
     bool speakResult = true,
     bool force = false,
   }) async {
     final now = DateTime.now();
 
-    // Debounce periodic requests: minimum 7 seconds between deep multimodal scene passes
-    if (!force && _lastAnalysisTime != null && now.difference(_lastAnalysisTime!).inSeconds < 7) {
+    // Debounce periodic auto-requests (minimum 5 seconds)
+    if (!force && _lastAnalysisTime != null && now.difference(_lastAnalysisTime!).inSeconds < 5) {
       return _latestResult;
     }
 
@@ -120,56 +133,51 @@ class CloudAIVisionService {
     final stopwatch = Stopwatch()..start();
 
     try {
-      final base64Image = base64Encode(jpegBytes);
+      SceneAnalysisResult result;
 
-      // Assistive Vision System Prompt tailored for visually impaired navigation
-      const promptText = """
-You are an assistive vision navigation guide for a visually impaired user.
-Analyze this image concisely and practically:
-1. SCENE: State the immediate environment context (e.g. 'Office workspace', 'Urban sidewalk', 'Narrow hallway', 'Living room').
-2. MOVING OBJECTS & HAZARDS: Identify any moving persons or vehicles (e.g. 'A person is walking towards you', 'A person is walking away', 'A car is approaching', 'A low-hanging branch ahead at head level').
-3. KEY OBJECTS: List 2-3 prominent objects with colors and position (e.g. 'Wooden table at 12 o'clock with open laptop and blue water bottle').
-4. PATHWAY: Is the path directly ahead clear, partially blocked, or obstructed?
-
-Keep the spoken summary to 2-3 direct, natural sentences. Avoid markdown, asterisks, or introductory filler words.
-""";
-
-      String descriptionText = "";
-
-      // 1. Try direct Gemini Multimodal API if key configured or public gateway
-      if (_geminiApiKey.isNotEmpty) {
-        descriptionText = await _callGeminiDirect(base64Image, promptText);
-      } else {
-        // 2. Try Cloud Multimodal Gateway endpoint
-        descriptionText = await _callCloudGateway(jpegBytes, promptText);
-      }
-
-      final latencyMs = stopwatch.elapsedMilliseconds;
-
-      if (descriptionText.isNotEmpty) {
-        final result = _parseSceneResponse(descriptionText, latencyMs);
-        _latestResult = result;
-        _sceneStreamController.add(result);
-
-        if (speakResult) {
-          AudioMutexController().speak(
-            text: result.sceneSummary,
-            priority: AudioPriority.level3Context, // Lower priority: auto-preempted if collision hazard arises
-            haptic: false,
+      // 1. If connected to Internet and Gemini API key is available, use Multimodal Generative AI
+      if (_isOnline && _geminiApiKey.isNotEmpty) {
+        try {
+          final base64Image = base64Encode(jpegBytes);
+          final cloudText = await _callGeminiDirect(base64Image);
+          result = _parseGeminiResponse(cloudText, stopwatch.elapsedMilliseconds);
+        } catch (cloudErr) {
+          debugPrint("[AISceneAnalyzer] Cloud AI call note: $cloudErr. Using Edge Scene Synthesizer.");
+          result = _synthesizeEdgeScene(
+            currentObstacles ?? [],
+            devicePitchDeg,
+            stopwatch.elapsedMilliseconds,
           );
         }
-
-        return result;
       } else {
-        throw Exception("Empty response from Multimodal AI");
+        // 2. Standalone Edge Neural Scene Synthesizer (Instant local reasoning, 0 Mac / 0 Internet dependency)
+        result = _synthesizeEdgeScene(
+          currentObstacles ?? [],
+          devicePitchDeg,
+          stopwatch.elapsedMilliseconds,
+        );
       }
+
+      _latestResult = result;
+      _sceneStreamController.add(result);
+
+      if (speakResult) {
+        AudioMutexController().speak(
+          text: result.sceneSummary,
+          priority: AudioPriority.level3Context,
+          haptic: false,
+        );
+      }
+
+      return result;
     } catch (e) {
-      debugPrint("[CloudAIVisionService] Scene analysis error: $e");
+      debugPrint("[AISceneAnalyzer] Analysis error: $e");
       final errResult = SceneAnalysisResult(
-        sceneSummary: "Scene analysis: Looking at surroundings.",
+        environmentType: "Environment Assessment",
+        sceneSummary: "Observing path ahead. Please proceed carefully.",
+        pathwayStatus: "Active",
         detailedObjects: [],
-        pathwayStatus: "Offline / Processing",
-        rawResponse: "$e",
+        recommendedAction: "Maintain forward trajectory.",
         latencyMs: stopwatch.elapsedMilliseconds,
         timestamp: DateTime.now(),
         isSuccess: false,
@@ -182,16 +190,129 @@ Keep the spoken summary to 2-3 direct, natural sentences. Avoid markdown, asteri
     }
   }
 
-  Future<String> _callGeminiDirect(String base64Image, String prompt) async {
+  /// Edge Semantic Synthesizer: constructs intelligent situational explanations on-device
+  SceneAnalysisResult _synthesizeEdgeScene(
+    List<DetectedObstacle> obstacles,
+    double pitchDeg,
+    int latencyMs,
+  ) {
+    if (obstacles.isEmpty) {
+      String postureNote = "";
+      if (pitchDeg < -25.0) {
+        postureNote = "Camera tilted downward towards ground.";
+      } else if (pitchDeg > 20.0) {
+        postureNote = "Camera angled upwards.";
+      }
+
+      final summary = postureNote.isNotEmpty
+          ? "Path directly ahead is completely clear. $postureNote"
+          : "Path directly ahead is completely clear of obstacles. Safe to proceed.";
+
+      return SceneAnalysisResult(
+        environmentType: "Open Path / Indoor Space",
+        sceneSummary: summary,
+        pathwayStatus: "Clear Path Ahead",
+        detailedObjects: ["No immediate collision hazards"],
+        recommendedAction: "Continue forward with normal pace.",
+        latencyMs: latencyMs,
+        timestamp: DateTime.now(),
+        isSuccess: true,
+      );
+    }
+
+    // Categorize objects by spatial clock zones
+    final centerObstacles = obstacles.where((o) => o.clockPosition == "12 o'clock" || o.clockPosition == "11 o'clock" || o.clockPosition == "1 o'clock").toList();
+    final leftObstacles = obstacles.where((o) => o.clockPosition == "9 o'clock" || o.clockPosition == "10 o'clock").toList();
+    final rightObstacles = obstacles.where((o) => o.clockPosition == "2 o'clock" || o.clockPosition == "3 o'clock").toList();
+
+    // Infer environment context from detected object types
+    final labelsLower = obstacles.map((o) => o.label.toLowerCase()).toSet();
+    String envType = "Indoor Living / Office Area";
+    if (labelsLower.any((l) => l.contains("car") || l.contains("bus") || l.contains("truck") || l.contains("traffic light"))) {
+      envType = "Outdoor Street / Transit Setting";
+    } else if (labelsLower.any((l) => l.contains("laptop") || l.contains("keyboard") || l.contains("mouse") || l.contains("desk"))) {
+      envType = "Workstation / Office Desk";
+    } else if (labelsLower.any((l) => l.contains("dining table") || l.contains("couch") || l.contains("bed") || l.contains("tv"))) {
+      envType = "Indoor Room / Living Space";
+    } else if (labelsLower.any((l) => l.contains("door") || l.contains("stairs"))) {
+      envType = "Hallway / Transit Corridor";
+    }
+
+    // Determine pathway status and navigation recommendation
+    String pathwayStatus = "Clear Path Ahead";
+    String action = "Maintain forward pace.";
+    final List<String> summaryParts = [];
+
+    if (centerObstacles.isNotEmpty) {
+      final nearestCenter = centerObstacles.reduce((a, b) => a.distanceMeters < b.distanceMeters ? a : b);
+      pathwayStatus = nearestCenter.distanceMeters < 1.5 ? "Path Obstructed" : "Path Narrowed";
+
+      if (nearestCenter.distanceMeters < 1.5) {
+        summaryParts.add("${nearestCenter.label} directly ahead at ${nearestCenter.distanceMeters} meters.");
+        if (leftObstacles.isEmpty) {
+          action = "Step slightly left towards 10 o'clock to bypass.";
+        } else if (rightObstacles.isEmpty) {
+          action = "Step slightly right towards 2 o'clock to bypass.";
+        } else {
+          action = "Stop and wait or scan left and right for open gap.";
+        }
+      } else {
+        summaryParts.add("${nearestCenter.label} ahead at ${nearestCenter.distanceMeters} meters.");
+      }
+    } else {
+      summaryParts.add("Path directly ahead at 12 o'clock is clear.");
+    }
+
+    // Add peripheral context
+    if (leftObstacles.isNotEmpty) {
+      final nearestLeft = leftObstacles.first;
+      summaryParts.add("On your left at ${nearestLeft.clockPosition}: ${nearestLeft.label} at ${nearestLeft.distanceMeters}m.");
+    }
+
+    if (rightObstacles.isNotEmpty) {
+      final nearestRight = rightObstacles.first;
+      summaryParts.add("On your right at ${nearestRight.clockPosition}: ${nearestRight.label} at ${nearestRight.distanceMeters}m.");
+    }
+
+    // Add recommended action to natural speech
+    summaryParts.add(action);
+
+    final detailedList = obstacles
+        .map((o) => "${o.label} (${o.clockPosition}, ${o.distanceMeters}m)")
+        .toList();
+
+    return SceneAnalysisResult(
+      environmentType: envType,
+      sceneSummary: summaryParts.join(" "),
+      pathwayStatus: pathwayStatus,
+      detailedObjects: detailedList,
+      recommendedAction: action,
+      latencyMs: latencyMs,
+      timestamp: DateTime.now(),
+      isSuccess: true,
+    );
+  }
+
+  Future<String> _callGeminiDirect(String base64Image) async {
     final endpoint = Uri.parse(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$_geminiApiKey",
     );
+
+    const promptText = """
+You are an assistive vision navigation guide for a visually impaired user.
+Analyze this image and explain the real-time situation clearly in 2-3 direct sentences:
+1. State the immediate environment context (e.g. 'You are in an indoor office workspace', 'You are on an outdoor sidewalk').
+2. Explain what is directly ahead at 12 o'clock, what is on the left (10 o'clock), and what is on the right (2 o'clock).
+3. State whether the pathway ahead is clear or blocked, and give a 1-sentence recommended action.
+
+Keep tone calm, direct, and conversational. Do not use asterisks, markdown, or bullet points.
+""";
 
     final payload = {
       "contents": [
         {
           "parts": [
-            {"text": prompt},
+            {"text": promptText},
             {
               "inline_data": {
                 "mime_type": "image/jpeg",
@@ -203,7 +324,7 @@ Keep the spoken summary to 2-3 direct, natural sentences. Avoid markdown, asteri
       ],
       "generationConfig": {
         "temperature": 0.2,
-        "maxOutputTokens": 250,
+        "maxOutputTokens": 200,
       }
     };
 
@@ -213,7 +334,7 @@ Keep the spoken summary to 2-3 direct, natural sentences. Avoid markdown, asteri
           headers: {"Content-Type": "application/json"},
           body: jsonEncode(payload),
         )
-        .timeout(const Duration(seconds: 8));
+        .timeout(const Duration(seconds: 6));
 
     if (response.statusCode == 200) {
       final json = jsonDecode(response.body);
@@ -225,70 +346,26 @@ Keep the spoken summary to 2-3 direct, natural sentences. Avoid markdown, asteri
         }
       }
     }
-    throw Exception("Gemini API returned status ${response.statusCode}: ${response.body}");
+    throw Exception("Gemini status ${response.statusCode}");
   }
 
-  Future<String> _callCloudGateway(Uint8List jpegBytes, String prompt) async {
-    // Cloud AI endpoint fallback
-    final candidates = [
-      "https://orbisnav-vision-api-914713788737.us-central1.run.app/analyze-scene",
-      "http://127.0.0.1:8000/analyze-scene",
-    ];
-
-    for (final url in candidates) {
-      try {
-        final uri = Uri.parse(url);
-        final response = await http
-            .post(
-              uri,
-              headers: {
-                "Content-Type": "image/jpeg",
-                "X-Prompt": prompt,
-              },
-              body: jpegBytes,
-            )
-            .timeout(const Duration(seconds: 5));
-
-        if (response.statusCode == 200) {
-          final json = jsonDecode(response.body);
-          return json['description'] as String? ?? json['summary'] as String? ?? "";
-        }
-      } catch (_) {
-        // try next candidate
-      }
-    }
-
-    // Default rich fallback synthesizer when server is busy
-    return "You are in an indoor space. Looking ahead at a workspace with furniture and daily items. Path ahead is clear.";
-  }
-
-  SceneAnalysisResult _parseSceneResponse(String rawText, int latencyMs) {
+  SceneAnalysisResult _parseGeminiResponse(String rawText, int latencyMs) {
     final cleaned = rawText
         .replaceAll("*", "")
         .replaceAll("#", "")
         .trim();
 
-    final List<String> objects = [];
-    String pathway = "Clear pathway";
-
-    if (cleaned.toLowerCase().contains("blocked") || cleaned.toLowerCase().contains("obstructed")) {
-      pathway = "Obstacle in pathway";
-    }
-
-    // Extract object items if listed
-    final lines = cleaned.split("\n");
-    for (var l in lines) {
-      final trimmed = l.trim();
-      if (trimmed.isNotEmpty && (trimmed.startsWith("-") || trimmed.startsWith("•") || RegExp(r'^\d+\.').hasMatch(trimmed))) {
-        objects.add(trimmed.replaceFirst(RegExp(r'^[-•\d\.]+\s*'), ''));
-      }
+    String pathway = "Clear Path Ahead";
+    if (cleaned.toLowerCase().contains("blocked") || cleaned.toLowerCase().contains("obstacle") || cleaned.toLowerCase().contains("caution")) {
+      pathway = "Obstacle in Path";
     }
 
     return SceneAnalysisResult(
+      environmentType: "Multimodal Visual Analysis",
       sceneSummary: cleaned,
-      detailedObjects: objects,
       pathwayStatus: pathway,
-      rawResponse: rawText,
+      detailedObjects: ["Gemini 2.0 Multimodal Grounding"],
+      recommendedAction: "Follow verbal cues.",
       latencyMs: latencyMs,
       timestamp: DateTime.now(),
       isSuccess: true,
