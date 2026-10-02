@@ -14,6 +14,7 @@ import 'services/barcode_product_service.dart';
 import 'services/currency_recognition_service.dart';
 import 'services/document_framing_guide_service.dart';
 import 'services/document_batch_ocr_reader_service.dart';
+import 'services/conversational_voice_qa_service.dart';
 import 'models/navigation_destination.dart';
 
 List<CameraDescription> _cameras = [];
@@ -133,6 +134,14 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   FramingAnalysisResult? _lastFramingResult;
   DocumentReadingSession _currentReadingSession = DocumentReadingSession.empty();
 
+  // Day 6 & Day 7: Conversational Multimodal Voice Q&A Assistant
+  final ConversationalVoiceQAService _voiceQaService =
+      ConversationalVoiceQAService();
+  StreamSubscription<VoiceQAExchange>? _voiceQaSubscription;
+  VoiceQAExchange? _lastVoiceExchange;
+  final TextEditingController _voiceQuestionInputController =
+      TextEditingController();
+
   int _activeNavTab = 0; // 0: Hazard & Navigation HUD, 1: Daily Living Tools
   final TextEditingController _manualBarcodeInputController =
       TextEditingController();
@@ -223,6 +232,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       if (mounted) {
         setState(() {
           _currentReadingSession = session;
+        });
+      }
+    });
+
+    // 4d. Listen to Conversational Voice Q&A Stream
+    _voiceQaSubscription = _voiceQaService.qaStream.listen((exchange) {
+      if (mounted) {
+        setState(() {
+          _lastVoiceExchange = exchange;
         });
       }
     });
@@ -472,13 +490,16 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _currencySubscription?.cancel();
     _framingSubscription?.cancel();
     _readerSubscription?.cancel();
+    _voiceQaSubscription?.cancel();
     _barcodeService.dispose();
     _currencyService.dispose();
     _framingGuideService.dispose();
     _documentReaderService.dispose();
+    _voiceQaService.dispose();
     _speechSubscription?.cancel();
     _destinationInputController.dispose();
     _manualBarcodeInputController.dispose();
+    _voiceQuestionInputController.dispose();
     _navService.stopNavigation();
     _cameraController?.dispose();
     _audioMutex.dispose();
@@ -563,61 +584,92 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           )
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Mode Switcher Tab Bar
-            _buildModeSwitcherTabBar(),
-            const SizedBox(height: 12),
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onDoubleTap: () {
+          // Day 5 Gesture: 2-Finger / Double Tap trigger for voice Q&A query
+          _triggerQuickVoiceQA("What is in front of me?");
+        },
+        onHorizontalDragEnd: (details) {
+          // Day 5 Gesture: Horizontal swipe toggles between Safety HUD and Daily Living Tools
+          if (details.primaryVelocity != null) {
+            if (details.primaryVelocity! < -200) {
+              setState(() => _activeNavTab = 1);
+              _audioMutex.speak(
+                text: "Daily Living Tools Mode.",
+                priority: AudioPriority.level2Navigation,
+                haptic: true,
+              );
+            } else if (details.primaryVelocity! > 200) {
+              setState(() => _activeNavTab = 0);
+              _audioMutex.speak(
+                text: "Safety Navigation Mode.",
+                priority: AudioPriority.level2Navigation,
+                haptic: true,
+              );
+            }
+          }
+        },
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Mode Switcher Tab Bar
+              _buildModeSwitcherTabBar(),
+              const SizedBox(height: 12),
 
-            // 1. Real-time Hardware & Telemetry Bar
-            _buildTelemetryBar(),
-            const SizedBox(height: 14),
-
-            if (_activeNavTab == 0) ...[
-              // 2. Portrait Camera Viewfinder with Live Real-World Bounding Boxes & Motion Badges
-              _buildPortraitCameraViewfinder(hasCriticalHazard),
+              // 1. Real-time Hardware & Telemetry Bar
+              _buildTelemetryBar(),
               const SizedBox(height: 14),
 
-              // 3. Real-Time Optimal Path Navigation Corridor Guidance
-              _buildOptimalPathGuidanceCard(hasCriticalHazard),
+              if (_activeNavTab == 0) ...[
+                // 2. Portrait Camera Viewfinder with Live Real-World Bounding Boxes & Motion Badges
+                _buildPortraitCameraViewfinder(hasCriticalHazard),
+                const SizedBox(height: 14),
+
+                // 2b. Conversational Multimodal Voice Q&A Assistant (Day 6 & 7)
+                _buildVoiceQACard(),
+                const SizedBox(height: 14),
+
+                // 3. Real-Time Optimal Path Navigation Corridor Guidance
+                _buildOptimalPathGuidanceCard(hasCriticalHazard),
+                const SizedBox(height: 14),
+
+                // 4. Dedicated Motion Detection & Kinematics Radar
+                _buildMotionKinematicsCard(),
+                const SizedBox(height: 14),
+
+                // 5. On-Device Obstacle Detection Status & Hazard List
+                _buildObstacleDetectionCard(hasCriticalHazard),
+                const SizedBox(height: 14),
+
+                // 5b. Multimodal AI Situation & Scene Analyzer
+                _buildSceneComprehensionCard(),
+                const SizedBox(height: 14),
+
+                // 6. GPS Nearby Destinations & POIs (4km Radius Explorer)
+                _build4kmNearbyDestinationsCard(),
+                const SizedBox(height: 14),
+
+                // 7. 12-Hour Spatial Navigation Radar & PDR Tracking
+                _buildNavigationRadar(),
+                const SizedBox(height: 14),
+              ] else ...[
+                // Daily Living Tools Tab (Barcode Scanner, Currency, Framing Guide, Batch Reader)
+                _buildDailyLivingToolsCard(),
+                const SizedBox(height: 14),
+              ],
+
+              // 8. Audio Mutex Speech & Voice State
+              _buildAudioStatusCard(hasCriticalHazard),
               const SizedBox(height: 14),
 
-              // 4. Dedicated Motion Detection & Kinematics Radar
-              _buildMotionKinematicsCard(),
-              const SizedBox(height: 14),
-
-              // 5. On-Device Obstacle Detection Status & Hazard List
-              _buildObstacleDetectionCard(hasCriticalHazard),
-              const SizedBox(height: 14),
-
-              // 5b. Multimodal AI Situation & Scene Analyzer
-              _buildSceneComprehensionCard(),
-              const SizedBox(height: 14),
-
-              // 6. GPS Nearby Destinations & POIs (4km Radius Explorer)
-              _build4kmNearbyDestinationsCard(),
-              const SizedBox(height: 14),
-
-              // 7. 12-Hour Spatial Navigation Radar & PDR Tracking
-              _buildNavigationRadar(),
-              const SizedBox(height: 14),
-            ] else ...[
-              // Daily Living Tools Tab (Day 1 Barcode Scanner & Day 2 Currency Recognizer)
-              _buildDailyLivingToolsCard(),
-              const SizedBox(height: 14),
+              // 9. Interactive Testing & Control Bar
+              _buildControlBar(),
+              const SizedBox(height: 24),
             ],
-
-            // 8. Audio Mutex Speech & Voice State
-            _buildAudioStatusCard(hasCriticalHazard),
-            const SizedBox(height: 14),
-
-            // 9. Interactive Testing & Control Bar
-            _buildControlBar(),
-            const SizedBox(height: 24),
-          ],
+          ),
         ),
       ),
     );
@@ -3188,6 +3240,130 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       ),
     );
   }
+
+  Widget _buildVoiceQACard() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.record_voice_over_outlined,
+                      size: 18, color: Color(0xFF00E5FF)),
+                  SizedBox(width: 8),
+                  Text(
+                    "CONVERSATIONAL VOICE AI",
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.2,
+                      color: Color(0xFF00E5FF),
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  _voiceQaService.isOnline ? "Gemini 2.0 Flash" : "Edge Offline",
+                  style: const TextStyle(fontSize: 10, color: Color(0xFF00E5FF)),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (_lastVoiceExchange != null) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0A0E17),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "Q: \"${_lastVoiceExchange!.question}\"",
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF00E5FF),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _lastVoiceExchange!.answer,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: Colors.white,
+                      height: 1.3,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    "${_lastVoiceExchange!.isFromCloud ? "Cloud Vision" : "Edge Synthesizer"} (${_lastVoiceExchange!.latencyMs}ms)",
+                    style: const TextStyle(fontSize: 9, color: Colors.white54),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          const Text(
+            "Quick Visual Queries (Tap or Voice):",
+            style: TextStyle(fontSize: 11, color: Colors.white60),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              _buildVoiceQueryChip("What is in front of me?"),
+              _buildVoiceQueryChip("Find empty chair"),
+              _buildVoiceQueryChip("Where is the doorway?"),
+              _buildVoiceQueryChip("Is anyone nearby?"),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVoiceQueryChip(String query) {
+    return ActionChip(
+      backgroundColor: const Color(0xFF1E293B),
+      side: const BorderSide(color: Colors.white12),
+      label: Text(
+        query,
+        style: const TextStyle(fontSize: 11, color: Color(0xFF00E5FF)),
+      ),
+      onPressed: () => _triggerQuickVoiceQA(query),
+    );
+  }
+
+  void _triggerQuickVoiceQA(String question) {
+    _voiceQaService.askQuestion(
+      question: question,
+      activeObstacles: _activeObstacles,
+      phonePitchDeg: _pitchDeg,
+    );
+  }
 }
+
 
 
