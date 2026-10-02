@@ -83,13 +83,13 @@ UNIVERSAL_CLASSES = [
 ]
 
 OBJECT_PHYSICAL_PRIORS: Dict[str, Tuple[float, float, str, str]] = {
-    # Eyewear
+    # Eyewear & Personal
     "spectacles": (0.045, 0.14, "width", "tabletop"),
     "glasses": (0.045, 0.14, "width", "tabletop"),
     "sunglasses": (0.045, 0.14, "width", "tabletop"),
     "reading glasses": (0.045, 0.14, "width", "tabletop"),
 
-    # Fans
+    # Fans & Climate
     "ceiling fan": (0.35, 1.10, "width", "tabletop"),
     "table fan": (0.45, 0.40, "height", "safety"),
     "electric fan": (0.50, 0.45, "height", "safety"),
@@ -100,9 +100,11 @@ OBJECT_PHYSICAL_PRIORS: Dict[str, Tuple[float, float, str, str]] = {
     "bus": (3.20, 2.50, "height", "critical"),
     "truck": (3.00, 2.40, "height", "critical"),
     "motorcycle": (1.10, 0.80, "height", "critical"),
-    "bicycle": (1.00, 1.60, "width", "waypoint"),
+    "bicycle": (1.00, 1.60, "width", "critical"),
     "vehicle": (1.50, 1.80, "width", "critical"),
     "train": (3.80, 3.00, "height", "critical"),
+    "airplane": (8.00, 15.00, "width", "safety"),
+    "boat": (2.00, 3.50, "width", "safety"),
 
     # Structural & Navigation Hazards
     "stairs": (1.50, 1.20, "height", "critical"),
@@ -117,12 +119,22 @@ OBJECT_PHYSICAL_PRIORS: Dict[str, Tuple[float, float, str, str]] = {
     "fire hydrant": (0.75, 0.40, "height", "safety"),
     "traffic light": (0.90, 0.35, "height", "safety"),
     "stop sign": (0.75, 0.75, "height", "critical"),
+    "parking meter": (1.20, 0.25, "height", "safety"),
+    "bench": (0.50, 1.50, "width", "safety"),
 
-    # People & Living Beings
+    # People & Animals
     "person": (1.70, 0.50, "height", "waypoint"),
     "pedestrian": (1.70, 0.50, "height", "waypoint"),
     "dog": (0.55, 0.70, "height", "safety"),
     "cat": (0.25, 0.40, "height", "safety"),
+    "horse": (1.80, 2.00, "height", "critical"),
+    "sheep": (0.90, 1.10, "height", "safety"),
+    "cow": (1.50, 2.20, "height", "critical"),
+    "elephant": (3.00, 3.50, "height", "critical"),
+    "bear": (1.80, 1.40, "height", "critical"),
+    "zebra": (1.50, 2.00, "height", "critical"),
+    "giraffe": (4.80, 2.20, "height", "critical"),
+    "bird": (0.20, 0.25, "height", "tabletop"),
 
     # Furniture & Living Space
     "chair": (0.85, 0.50, "height", "safety"),
@@ -132,7 +144,6 @@ OBJECT_PHYSICAL_PRIORS: Dict[str, Tuple[float, float, str, str]] = {
     "dining table": (0.75, 1.20, "width", "safety"),
     "desk": (0.75, 1.20, "width", "safety"),
     "bed": (0.65, 1.60, "width", "safety"),
-    "bench": (0.80, 1.40, "width", "safety"),
     "refrigerator": (1.75, 0.80, "height", "safety"),
     "sink": (0.80, 0.60, "width", "safety"),
     "toilet": (0.75, 0.50, "height", "safety"),
@@ -148,16 +159,26 @@ OBJECT_PHYSICAL_PRIORS: Dict[str, Tuple[float, float, str, str]] = {
     "remote": (0.18, 0.05, "height", "tabletop"),
     "tv": (0.55, 0.95, "width", "safety"),
 
+    # Appliances
+    "microwave": (0.35, 0.55, "width", "tabletop"),
+    "oven": (0.85, 0.60, "height", "safety"),
+    "toaster": (0.20, 0.25, "width", "tabletop"),
+
     # Tabletop & Handheld Items
     "book": (0.24, 0.17, "height", "tabletop"),
     "bottle": (0.24, 0.08, "height", "tabletop"),
     "water bottle": (0.24, 0.08, "height", "tabletop"),
+    "wine glass": (0.20, 0.08, "height", "tabletop"),
     "cup": (0.10, 0.09, "height", "tabletop"),
     "mug": (0.10, 0.09, "height", "tabletop"),
     "plate": (0.03, 0.25, "width", "tabletop"),
     "bowl": (0.08, 0.16, "width", "tabletop"),
+    "fork": (0.18, 0.03, "height", "tabletop"),
+    "knife": (0.20, 0.03, "height", "safety"),
+    "spoon": (0.16, 0.04, "height", "tabletop"),
     "pen": (0.14, 0.015, "height", "tabletop"),
     "backpack": (0.45, 0.32, "height", "safety"),
+    "umbrella": (0.85, 0.10, "height", "tabletop"),
     "handbag": (0.28, 0.35, "width", "tabletop"),
     "suitcase": (0.70, 0.48, "height", "safety"),
     "wallet": (0.10, 0.12, "width", "tabletop"),
@@ -166,6 +187,10 @@ OBJECT_PHYSICAL_PRIORS: Dict[str, Tuple[float, float, str, str]] = {
     "slippers": (0.10, 0.26, "width", "tabletop"),
     "clock": (0.30, 0.30, "width", "tabletop"),
     "vase": (0.30, 0.15, "height", "tabletop"),
+    "scissors": (0.15, 0.08, "height", "tabletop"),
+    "teddy bear": (0.35, 0.25, "height", "tabletop"),
+    "hair drier": (0.22, 0.18, "height", "tabletop"),
+    "toothbrush": (0.18, 0.02, "height", "tabletop"),
 }
 
 # Calibrated Normalized Optical Focal Lengths (~62° Vertical FOV)
@@ -254,13 +279,35 @@ def estimate_metric_distance(label: str, box_w: float, box_h: float) -> Tuple[fl
     dist_m = round(float(np.clip(raw_dist, 0.3, 15.0)), 1)
     return dist_m, hazard_cat
 
+def compute_box_iou(box1: List[float], box2: List[float]) -> float:
+    """Computes Intersection over Union (IoU) between two bounding boxes [x1, y1, x2, y2]."""
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+
+    intersection_w = max(0.0, x2 - x1)
+    intersection_h = max(0.0, y2 - y1)
+    intersection_area = intersection_w * intersection_h
+
+    area1 = max(0.0, (box1[2] - box1[0]) * (box1[3] - box1[1]))
+    area2 = max(0.0, (box2[2] - box2[0]) * (box2[3] - box2[1]))
+    union_area = area1 + area2 - intersection_area
+
+    if union_area <= 0.0:
+        return 0.0
+    return intersection_area / union_area
+
 def analyze_frame(img: np.ndarray) -> List[Dict[str, Any]]:
-    """Runs real-time multi-class inference and metric distance calculation."""
+    """Runs real-time multi-class inference, geometric filtering, class-aware NMS and metric distance calculation."""
     height, width = img.shape[:2]
-    detections = []
+    raw_candidates = []
+
+    # Classes prone to background texture false triggers (require higher confidence)
+    small_texture_classes = {"scissors", "tie", "remote", "mouse", "sports ball", "hair drier", "toothbrush"}
 
     # High-accuracy 480px inference for universal recall
-    results = yolo_model(img, imgsz=480, conf=0.15, verbose=False)
+    results = yolo_model(img, imgsz=480, conf=0.20, verbose=False)
 
     if results and len(results) > 0 and results[0].boxes is not None:
         boxes = results[0].boxes
@@ -268,6 +315,17 @@ def analyze_frame(img: np.ndarray) -> List[Dict[str, Any]]:
             cls_id = int(box.cls[0].item())
             class_name = yolo_model.names.get(cls_id, "Obstacle")
             conf = float(box.conf[0].item())
+            lower_name = class_name.lower().strip()
+
+            # Class-adaptive confidence gating
+            req_conf = 0.25
+            if lower_name == "person":
+                req_conf = 0.32
+            elif lower_name in small_texture_classes:
+                req_conf = 0.35
+
+            if conf < req_conf:
+                continue
 
             xyxy = box.xyxy[0].tolist()
             x_min = max(0.0, xyxy[0] / width)
@@ -275,34 +333,80 @@ def analyze_frame(img: np.ndarray) -> List[Dict[str, Any]]:
             x_max = min(1.0, xyxy[2] / width)
             y_max = min(1.0, xyxy[3] / height)
 
-            x_center = (x_min + x_max) / 2.0
-            clock_zone = centroid_to_clock_zone(x_center)
-
             box_w = x_max - x_min
             box_h = y_max - y_min
+            area = box_w * box_h
 
-            distance, hazard_cat = estimate_metric_distance(class_name, box_w, box_h)
-            ttc = round(float(np.clip(distance / 1.2, 0.4, 9.9)), 1)
+            # Area & Aspect ratio sanity checks (eliminate noise & edge flashes)
+            if area < 0.0012 or area > 0.96:
+                continue
+            aspect_ratio = box_w / max(0.001, box_h)
+            if aspect_ratio > 14.0 or aspect_ratio < 0.07:
+                continue
 
-            is_critical = False
-            if hazard_cat == "critical":
-                is_critical = distance < 2.5 or ttc < 2.0
-            elif hazard_cat == "safety":
-                is_critical = distance < 1.3
-            elif hazard_cat == "waypoint":
-                is_critical = class_name.lower() == "person" and (distance < 1.2 or ttc < 1.2)
-            else:
-                is_critical = False
+            # Class-specific geometric constraints
+            if lower_name == "person":
+                if box_h < 0.04 or box_w > 2.2 * box_h:
+                    continue
 
-            detections.append({
-                "label": class_name.title(),
-                "clock_zone": clock_zone,
-                "distance_meters": distance,
-                "ttc_seconds": ttc,
-                "confidence": round(conf, 2),
-                "is_critical": is_critical,
-                "bbox": [round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3)]
+            raw_candidates.append({
+                "class_name": class_name,
+                "conf": conf,
+                "bbox": [x_min, y_min, x_max, y_max],
+                "box_w": box_w,
+                "box_h": box_h,
             })
+
+    # Class-aware Non-Maximum Suppression (preserve co-located distinct objects, deduplicate same class)
+    raw_candidates.sort(key=lambda x: x["conf"], reverse=True)
+    selected_candidates = []
+    for cand in raw_candidates:
+        should_keep = True
+        for sel in selected_candidates:
+            iou = compute_box_iou(cand["bbox"], sel["bbox"])
+            same_class = cand["class_name"].lower() == sel["class_name"].lower()
+            thresh = 0.45 if same_class else 0.72
+            if iou > thresh:
+                should_keep = False
+                break
+        if should_keep:
+            selected_candidates.append(cand)
+            if len(selected_candidates) >= 32:
+                break
+
+    detections = []
+    for item in selected_candidates:
+        class_name = item["class_name"]
+        conf = item["conf"]
+        x_min, y_min, x_max, y_max = item["bbox"]
+        box_w = item["box_w"]
+        box_h = item["box_h"]
+
+        x_center = (x_min + x_max) / 2.0
+        clock_zone = centroid_to_clock_zone(x_center)
+
+        distance, hazard_cat = estimate_metric_distance(class_name, box_w, box_h)
+        ttc = round(float(np.clip(distance / 1.2, 0.4, 9.9)), 1)
+
+        is_critical = False
+        if hazard_cat == "critical":
+            is_critical = distance < 2.5 or ttc < 2.0
+        elif hazard_cat == "safety":
+            is_critical = distance < 1.3
+        elif hazard_cat == "waypoint":
+            is_critical = class_name.lower() == "person" and (distance < 1.2 or ttc < 1.2)
+        else:
+            is_critical = False
+
+        detections.append({
+            "label": class_name.title(),
+            "clock_zone": clock_zone,
+            "distance_meters": distance,
+            "ttc_seconds": ttc,
+            "confidence": round(conf, 2),
+            "is_critical": is_critical,
+            "bbox": [round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3)]
+        })
 
     if not detections:
         detections.append({

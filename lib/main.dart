@@ -10,6 +10,8 @@ import 'services/on_device_obstacle_detector.dart';
 import 'services/kinematic_motion_tracker.dart';
 import 'services/cloud_ai_vision_service.dart';
 import 'services/nameboard_navigation_service.dart';
+import 'services/barcode_product_service.dart';
+import 'services/currency_recognition_service.dart';
 import 'models/navigation_destination.dart';
 
 List<CameraDescription> _cameras = [];
@@ -61,7 +63,8 @@ class OrbisNavLiveApp extends StatefulWidget {
   State<OrbisNavLiveApp> createState() => _OrbisNavLiveAppState();
 }
 
-class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingObserver {
+class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
+    with WidgetsBindingObserver {
   // Real Hardware Components
   CameraController? _cameraController;
   bool _isCameraInitialized = false;
@@ -106,7 +109,20 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   final NameboardNavigationService _navService = NameboardNavigationService();
   StreamSubscription<NavigationStatusState>? _navSubscription;
   NavigationStatusState? _navState;
-  final TextEditingController _destinationInputController = TextEditingController();
+  final TextEditingController _destinationInputController =
+      TextEditingController();
+
+  // Day 1 & Day 2: Daily Living Suite (Barcode Scanner & Offline Currency Recognizer)
+  final BarcodeProductService _barcodeService = BarcodeProductService();
+  final CurrencyRecognitionService _currencyService =
+      CurrencyRecognitionService();
+  StreamSubscription<ScannedProductInfo>? _productSubscription;
+  StreamSubscription<CurrencyScanResult>? _currencySubscription;
+  ScannedProductInfo? _lastScannedProduct;
+  CurrencyScanResult? _lastCurrencyResult;
+  int _activeNavTab = 0; // 0: Hazard & Navigation HUD, 1: Daily Living Tools
+  final TextEditingController _manualBarcodeInputController =
+      TextEditingController();
 
   // System States
   final double _tempC = 37.2;
@@ -164,6 +180,23 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       }
     });
 
+    // 4b. Listen to Daily Living Barcode & Currency Streams
+    _productSubscription = _barcodeService.productStream.listen((prod) {
+      if (mounted) {
+        setState(() {
+          _lastScannedProduct = prod;
+        });
+      }
+    });
+
+    _currencySubscription = _currencyService.resultStream.listen((curr) {
+      if (mounted) {
+        setState(() {
+          _lastCurrencyResult = curr;
+        });
+      }
+    });
+
     // 5. Initialize GPS & 4km Radius POI Discovery
     await _navService.initializeGpsAndNearby();
 
@@ -178,7 +211,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
 
     // Initial voice greeting
     _audioMutex.speak(
-      text: "AI Eyes obstacle and motion detection activated. Standalone offline mode ready.",
+      text:
+          "AI Eyes obstacle and motion detection activated. Standalone offline mode ready.",
       priority: AudioPriority.level2Navigation,
       haptic: true,
     );
@@ -197,7 +231,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
 
       try {
         await _cameraController!.initialize();
-        await _cameraController!.lockCaptureOrientation(DeviceOrientation.portraitUp);
+        await _cameraController!
+            .lockCaptureOrientation(DeviceOrientation.portraitUp);
         if (mounted) {
           setState(() {
             _isCameraInitialized = true;
@@ -212,7 +247,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   DateTime _lastSensorUiUpdateTime = DateTime.now();
 
   void _startSensorStream() {
-    _sensorSubscription = accelerometerEventStream().listen((AccelerometerEvent event) {
+    _sensorSubscription =
+        accelerometerEventStream().listen((AccelerometerEvent event) {
       final ax = event.x;
       final ay = event.y;
       final az = event.z;
@@ -227,7 +263,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       // PDR Step Detection
       final magnitude = math.sqrt(ax * ax + ay * ay + az * az);
       final now = DateTime.now();
-      if (_lastAccelMagnitude < 11.2 && magnitude >= 11.2 && now.difference(_lastStepTime).inMilliseconds > 350) {
+      if (_lastAccelMagnitude < 11.2 &&
+          magnitude >= 11.2 &&
+          now.difference(_lastStepTime).inMilliseconds > 350) {
         _lastStepTime = now;
         _onStepDetected();
       }
@@ -236,7 +274,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       // Downward pitch prompt (severe downward pitch > 45° looking at shoes) - 60s cooldown
       if (pitchDeg < -45.0) {
         final nowTime = DateTime.now();
-        if (_lastTiltWarningTime == null || nowTime.difference(_lastTiltWarningTime!).inSeconds >= 60) {
+        if (_lastTiltWarningTime == null ||
+            nowTime.difference(_lastTiltWarningTime!).inSeconds >= 60) {
           _lastTiltWarningTime = nowTime;
           _audioMutex.speak(
             text: "Please tilt phone up for obstacle vision.",
@@ -247,7 +286,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       }
 
       // Throttle UI setState to 3.3 Hz (every 300ms) to prevent 100Hz rebuild storms and lag
-      if (mounted && now.difference(_lastSensorUiUpdateTime).inMilliseconds >= 300) {
+      if (mounted &&
+          now.difference(_lastSensorUiUpdateTime).inMilliseconds >= 300) {
         _lastSensorUiUpdateTime = now;
         setState(() {});
       }
@@ -322,7 +362,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
   /// Stops detection, clears speech queues, and provides an exclusive voice explanation of the situation.
   Future<void> _explainSituation() async {
     if (_isExplainingSituation) return;
-    if (_cameraController == null || !_cameraController!.value.isInitialized) return;
+    if (_cameraController == null || !_cameraController!.value.isInitialized)
+      return;
 
     setState(() {
       _isExplainingSituation = true;
@@ -397,8 +438,13 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
     _onDeviceDetector.dispose();
     _cloudAiService.dispose();
     _navSubscription?.cancel();
+    _productSubscription?.cancel();
+    _currencySubscription?.cancel();
+    _barcodeService.dispose();
+    _currencyService.dispose();
     _speechSubscription?.cancel();
     _destinationInputController.dispose();
+    _manualBarcodeInputController.dispose();
     _navService.stopNavigation();
     _cameraController?.dispose();
     _audioMutex.dispose();
@@ -407,7 +453,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
 
   @override
   Widget build(BuildContext context) {
-    final hasCriticalHazard = _primaryHazard != null && _primaryHazard!.isHazard;
+    final hasCriticalHazard =
+        _primaryHazard != null && _primaryHazard!.isHazard;
 
     return Scaffold(
       appBar: AppBar(
@@ -424,7 +471,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               ),
               child: const Text(
                 "ORBISNAV",
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 1.5),
+                style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    letterSpacing: 1.5),
               ),
             ),
             const SizedBox(width: 8),
@@ -443,21 +493,34 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               margin: const EdgeInsets.only(right: 12),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: _isVisionActive ? const Color(0xFF76FF03).withValues(alpha: 0.15) : Colors.grey.withValues(alpha: 0.2),
+                color: _isVisionActive
+                    ? const Color(0xFF76FF03).withValues(alpha: 0.15)
+                    : Colors.grey.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: _isVisionActive ? const Color(0xFF76FF03) : Colors.grey),
+                border: Border.all(
+                    color: _isVisionActive
+                        ? const Color(0xFF76FF03)
+                        : Colors.grey),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.directions_run, size: 13, color: _isVisionActive ? const Color(0xFF76FF03) : Colors.grey),
+                  Icon(Icons.directions_run,
+                      size: 13,
+                      color: _isVisionActive
+                          ? const Color(0xFF76FF03)
+                          : Colors.grey),
                   const SizedBox(width: 4),
                   Text(
-                    _isVisionActive ? "MOTION ON (${_inferenceLatencyMs}ms)" : "PAUSED",
+                    _isVisionActive
+                        ? "MOTION ON (${_inferenceLatencyMs}ms)"
+                        : "PAUSED",
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
-                      color: _isVisionActive ? const Color(0xFF76FF03) : Colors.grey,
+                      color: _isVisionActive
+                          ? const Color(0xFF76FF03)
+                          : Colors.grey,
                     ),
                   ),
                 ],
@@ -471,37 +534,47 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Mode Switcher Tab Bar
+            _buildModeSwitcherTabBar(),
+            const SizedBox(height: 12),
+
             // 1. Real-time Hardware & Telemetry Bar
             _buildTelemetryBar(),
             const SizedBox(height: 14),
 
-            // 2. Portrait Camera Viewfinder with Live Real-World Bounding Boxes & Motion Badges
-            _buildPortraitCameraViewfinder(hasCriticalHazard),
-            const SizedBox(height: 14),
+            if (_activeNavTab == 0) ...[
+              // 2. Portrait Camera Viewfinder with Live Real-World Bounding Boxes & Motion Badges
+              _buildPortraitCameraViewfinder(hasCriticalHazard),
+              const SizedBox(height: 14),
 
-            // 3. Real-Time Optimal Path Navigation Corridor Guidance
-            _buildOptimalPathGuidanceCard(hasCriticalHazard),
-            const SizedBox(height: 14),
+              // 3. Real-Time Optimal Path Navigation Corridor Guidance
+              _buildOptimalPathGuidanceCard(hasCriticalHazard),
+              const SizedBox(height: 14),
 
-            // 4. Dedicated Motion Detection & Kinematics Radar
-            _buildMotionKinematicsCard(),
-            const SizedBox(height: 14),
+              // 4. Dedicated Motion Detection & Kinematics Radar
+              _buildMotionKinematicsCard(),
+              const SizedBox(height: 14),
 
-            // 5. On-Device Obstacle Detection Status & Hazard List
-            _buildObstacleDetectionCard(hasCriticalHazard),
-            const SizedBox(height: 14),
+              // 5. On-Device Obstacle Detection Status & Hazard List
+              _buildObstacleDetectionCard(hasCriticalHazard),
+              const SizedBox(height: 14),
 
-            // 5. Multimodal AI Situation & Scene Analyzer
-            _buildSceneComprehensionCard(),
-            const SizedBox(height: 14),
+              // 5b. Multimodal AI Situation & Scene Analyzer
+              _buildSceneComprehensionCard(),
+              const SizedBox(height: 14),
 
-            // 6. GPS Nearby Destinations & POIs (4km Radius Explorer)
-            _build4kmNearbyDestinationsCard(),
-            const SizedBox(height: 14),
+              // 6. GPS Nearby Destinations & POIs (4km Radius Explorer)
+              _build4kmNearbyDestinationsCard(),
+              const SizedBox(height: 14),
 
-            // 7. 12-Hour Spatial Navigation Radar & PDR Tracking
-            _buildNavigationRadar(),
-            const SizedBox(height: 14),
+              // 7. 12-Hour Spatial Navigation Radar & PDR Tracking
+              _buildNavigationRadar(),
+              const SizedBox(height: 14),
+            ] else ...[
+              // Daily Living Tools Tab (Day 1 Barcode Scanner & Day 2 Currency Recognizer)
+              _buildDailyLivingToolsCard(),
+              const SizedBox(height: 14),
+            ],
 
             // 8. Audio Mutex Speech & Voice State
             _buildAudioStatusCard(hasCriticalHazard),
@@ -529,12 +602,23 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         runSpacing: 10,
         alignment: WrapAlignment.spaceAround,
         children: [
-          _buildStat("MODE", "Portrait Live", Icons.screen_lock_portrait, const Color(0xFF00E5FF)),
-          _buildStat("MOTION", "Kinematics Active", Icons.directions_run, const Color(0xFF76FF03)),
-          _buildStat("LATENCY", "${_inferenceLatencyMs}ms", Icons.speed, const Color(0xFF00E5FF)),
-          _buildStat("GPS FIX", _navService.hasRealGpsFix ? "Active GPS" : "Sensor Nav", Icons.location_on, _navService.hasRealGpsFix ? const Color(0xFF76FF03) : Colors.orangeAccent),
-          _buildStat("SOC TEMP", "${_tempC.toStringAsFixed(1)}°C", Icons.thermostat, const Color(0xFF76FF03)),
-          _buildStat("BATTERY", "$_battery%", Icons.battery_charging_full, Colors.greenAccent),
+          _buildStat("MODE", "Portrait Live", Icons.screen_lock_portrait,
+              const Color(0xFF00E5FF)),
+          _buildStat("MOTION", "Kinematics Active", Icons.directions_run,
+              const Color(0xFF76FF03)),
+          _buildStat("LATENCY", "${_inferenceLatencyMs}ms", Icons.speed,
+              const Color(0xFF00E5FF)),
+          _buildStat(
+              "GPS FIX",
+              _navService.hasRealGpsFix ? "Active GPS" : "Sensor Nav",
+              Icons.location_on,
+              _navService.hasRealGpsFix
+                  ? const Color(0xFF76FF03)
+                  : Colors.orangeAccent),
+          _buildStat("SOC TEMP", "${_tempC.toStringAsFixed(1)}°C",
+              Icons.thermostat, const Color(0xFF76FF03)),
+          _buildStat("BATTERY", "$_battery%", Icons.battery_charging_full,
+              Colors.greenAccent),
         ],
       ),
     );
@@ -550,8 +634,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(label, style: const TextStyle(fontSize: 9, color: Colors.white54)),
-            Text(value, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color)),
+            Text(label,
+                style: const TextStyle(fontSize: 9, color: Colors.white54)),
+            Text(value,
+                style: TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.bold, color: color)),
           ],
         ),
       ],
@@ -570,7 +657,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             color: const Color(0xFF0E1420),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: hasCriticalHazard ? const Color(0xFFFF1744) : const Color(0xFF00E5FF).withValues(alpha: 0.4),
+              color: hasCriticalHazard
+                  ? const Color(0xFFFF1744)
+                  : const Color(0xFF00E5FF).withValues(alpha: 0.4),
               width: hasCriticalHazard ? 2.5 : 1.2,
             ),
           ),
@@ -589,11 +678,14 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.camera_alt, size: 48, color: Colors.white.withValues(alpha: 0.2)),
+                          Icon(Icons.camera_alt,
+                              size: 48,
+                              color: Colors.white.withValues(alpha: 0.2)),
                           const SizedBox(height: 8),
                           const Text(
                             "Connecting Portrait Camera Stream...",
-                            style: TextStyle(fontSize: 12, color: Colors.white54),
+                            style:
+                                TextStyle(fontSize: 12, color: Colors.white54),
                           ),
                         ],
                       ),
@@ -605,7 +697,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   child: Icon(
                     Icons.filter_center_focus,
                     size: 70,
-                    color: hasCriticalHazard ? const Color(0xFFFF1744).withValues(alpha: 0.4) : Colors.cyanAccent.withValues(alpha: 0.20),
+                    color: hasCriticalHazard
+                        ? const Color(0xFFFF1744).withValues(alpha: 0.4)
+                        : Colors.cyanAccent.withValues(alpha: 0.20),
                   ),
                 ),
 
@@ -618,7 +712,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
                         decoration: BoxDecoration(
                           color: Colors.black.withValues(alpha: 0.75),
                           borderRadius: BorderRadius.circular(6),
@@ -626,24 +721,34 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.portrait, size: 12, color: Color(0xFF00E5FF)),
+                            const Icon(Icons.portrait,
+                                size: 12, color: Color(0xFF00E5FF)),
                             const SizedBox(width: 4),
                             Text(
                               "PORTRAIT • ${_activeObstacles.length} OBJECTS",
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white),
                             ),
                           ],
                         ),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
                         decoration: BoxDecoration(
-                          color: hasCriticalHazard ? Colors.red.withValues(alpha: 0.85) : Colors.green.withValues(alpha: 0.75),
+                          color: hasCriticalHazard
+                              ? Colors.red.withValues(alpha: 0.85)
+                              : Colors.green.withValues(alpha: 0.75),
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
                           hasCriticalHazard ? "HAZARD DETECTED" : "PATH CLEAR",
-                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
+                          style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white),
                         ),
                       ),
                     ],
@@ -652,11 +757,19 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
 
                 // Dynamic Live Bounding Boxes with Motion Indicators
                 ..._activeObstacles.map((obs) {
-                  final left = (obs.xMin * boxWidth).clamp(0.0, boxWidth - 40.0);
-                  final top = (obs.yMin * boxHeight).clamp(0.0, boxHeight - 30.0);
-                  final width = ((obs.xMax - obs.xMin) * boxWidth).clamp(40.0, boxWidth);
-                  final height = ((obs.yMax - obs.yMin) * boxHeight).clamp(30.0, boxHeight);
-                  final color = obs.isHazard ? const Color(0xFFFF1744) : (obs.isMoving ? const Color(0xFFFFD600) : const Color(0xFF00E5FF));
+                  final left =
+                      (obs.xMin * boxWidth).clamp(0.0, boxWidth - 40.0);
+                  final top =
+                      (obs.yMin * boxHeight).clamp(0.0, boxHeight - 30.0);
+                  final width =
+                      ((obs.xMax - obs.xMin) * boxWidth).clamp(40.0, boxWidth);
+                  final height = ((obs.yMax - obs.yMin) * boxHeight)
+                      .clamp(30.0, boxHeight);
+                  final color = obs.isHazard
+                      ? const Color(0xFFFF1744)
+                      : (obs.isMoving
+                          ? const Color(0xFFFFD600)
+                          : const Color(0xFF00E5FF));
 
                   return Positioned(
                     left: left,
@@ -673,14 +786,16 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 1),
                             color: color,
                             child: Text(
                               "${obs.label.toUpperCase()} ${(obs.confidence * 100).toInt()}% • ${obs.formattedMotionBadge} • ${obs.distanceMeters.toStringAsFixed(1)}m",
                               style: TextStyle(
                                 fontSize: 9,
                                 fontWeight: FontWeight.bold,
-                                color: obs.isHazard ? Colors.white : Colors.black,
+                                color:
+                                    obs.isHazard ? Colors.white : Colors.black,
                               ),
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -698,14 +813,17 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                     left: 14,
                     right: 14,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
                       decoration: BoxDecoration(
                         color: const Color(0xFF00E676).withValues(alpha: 0.22),
                         borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: const Color(0xFF00E676), width: 2.5),
+                        border: Border.all(
+                            color: const Color(0xFF00E676), width: 2.5),
                         boxShadow: [
                           BoxShadow(
-                            color: const Color(0xFF00E676).withValues(alpha: 0.35),
+                            color:
+                                const Color(0xFF00E676).withValues(alpha: 0.35),
                             blurRadius: 10,
                             spreadRadius: 2,
                           ),
@@ -713,7 +831,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                       ),
                       child: Row(
                         children: [
-                          const Icon(Icons.storefront, color: Color(0xFF00E676), size: 26),
+                          const Icon(Icons.storefront,
+                              color: Color(0xFF00E676), size: 26),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Column(
@@ -722,28 +841,40 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                               children: [
                                 Text(
                                   "TARGET NAMEBOARD SIGHTED (${(_navService.targetBoard!.confidence * 100).toInt()}% CONF)",
-                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF00E676), letterSpacing: 1.1),
+                                  style: const TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF00E676),
+                                      letterSpacing: 1.1),
                                 ),
                                 Text(
                                   _navService.targetBoard!.text,
-                                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                                  style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white),
                                 ),
                                 Text(
                                   "Vector: ${_navService.targetBoard!.clockZone} • Dist: ${_navService.targetBoard!.distanceMeters.toStringAsFixed(1)}m",
-                                  style: const TextStyle(fontSize: 11, color: Colors.white70),
+                                  style: const TextStyle(
+                                      fontSize: 11, color: Colors.white70),
                                 ),
                               ],
                             ),
                           ),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
                             decoration: BoxDecoration(
                               color: const Color(0xFF00E676),
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: const Text(
                               "LOCKED",
-                              style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black),
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black),
                             ),
                           ),
                         ],
@@ -757,7 +888,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   left: 10,
                   right: 10,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
                       color: Colors.black.withValues(alpha: 0.75),
                       borderRadius: BorderRadius.circular(8),
@@ -768,10 +900,22 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                       runSpacing: 4,
                       alignment: WrapAlignment.spaceBetween,
                       children: [
-                        Text("Pitch: ${_pitchDeg.toStringAsFixed(1)}°", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _pitchDeg < -30 ? Colors.orange : Colors.white)),
-                        Text("Roll: ${_rollDeg.toStringAsFixed(1)}°", style: const TextStyle(fontSize: 11, color: Colors.white70)),
-                        Text("Latency: ${_inferenceLatencyMs}ms", style: const TextStyle(fontSize: 11, color: Color(0xFF00E5FF))),
-                        Text("Haptic: $_lastHaptic", style: const TextStyle(fontSize: 11, color: Color(0xFF76FF03))),
+                        Text("Pitch: ${_pitchDeg.toStringAsFixed(1)}°",
+                            style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: _pitchDeg < -30
+                                    ? Colors.orange
+                                    : Colors.white)),
+                        Text("Roll: ${_rollDeg.toStringAsFixed(1)}°",
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.white70)),
+                        Text("Latency: ${_inferenceLatencyMs}ms",
+                            style: const TextStyle(
+                                fontSize: 11, color: Color(0xFF00E5FF))),
+                        Text("Haptic: $_lastHaptic",
+                            style: const TextStyle(
+                                fontSize: 11, color: Color(0xFF76FF03))),
                       ],
                     ),
                   ),
@@ -786,7 +930,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
 
   /// Dedicated Real-Time Optimal Path Navigation Corridor Guidance Card
   Widget _buildOptimalPathGuidanceCard(bool hasCriticalHazard) {
-    final opt = _optimalPath ?? OptimalPathRecommendation.computeOptimalPath(_activeObstacles);
+    final opt = _optimalPath ??
+        OptimalPathRecommendation.computeOptimalPath(_activeObstacles);
 
     IconData directionIcon;
     Color directionColor;
@@ -844,7 +989,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   const SizedBox(width: 8),
                   const Text(
                     "REAL-TIME OPTIMAL PATH GUIDANCE",
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1),
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.1),
                   ),
                 ],
               ),
@@ -853,7 +1001,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                 decoration: BoxDecoration(
                   color: directionColor.withValues(alpha: 0.18),
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: directionColor.withValues(alpha: 0.6)),
+                  border:
+                      Border.all(color: directionColor.withValues(alpha: 0.6)),
                 ),
                 child: Text(
                   badgeText,
@@ -885,19 +1034,24 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   children: [
                     Text(
                       opt.voiceInstruction,
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white),
                     ),
                     const SizedBox(height: 2),
                     Text(
                       "Clearance: ${opt.clearanceMeters.toStringAsFixed(1)}m • Vector: ${opt.clockDirection}",
-                      style: const TextStyle(fontSize: 11, color: Colors.white70),
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white70),
                     ),
                   ],
                 ),
               ),
               IconButton(
                 tooltip: "Speak Optimal Path",
-                icon: const Icon(Icons.volume_up, color: Color(0xFF00E5FF), size: 22),
+                icon: const Icon(Icons.volume_up,
+                    color: Color(0xFF00E5FF), size: 22),
                 onPressed: () {
                   _audioMutex.speak(
                     text: opt.voiceInstruction,
@@ -927,7 +1081,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         color: const Color(0xFF131B2A),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: hasActiveMotion ? const Color(0xFFFFD600).withValues(alpha: 0.6) : Colors.white10,
+          color: hasActiveMotion
+              ? const Color(0xFFFFD600).withValues(alpha: 0.6)
+              : Colors.white10,
           width: hasActiveMotion ? 1.5 : 1.0,
         ),
       ),
@@ -939,27 +1095,41 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             children: [
               Row(
                 children: [
-                  Icon(Icons.directions_run, color: hasActiveMotion ? const Color(0xFFFFD600) : const Color(0xFF00E5FF), size: 18),
+                  Icon(Icons.directions_run,
+                      color: hasActiveMotion
+                          ? const Color(0xFFFFD600)
+                          : const Color(0xFF00E5FF),
+                      size: 18),
                   const SizedBox(width: 8),
                   const Text(
                     "MOTION DETECTION & VELOCITY RADAR",
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1),
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.1),
                   ),
                 ],
               ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: hasActiveMotion ? const Color(0xFFFFD600).withValues(alpha: 0.2) : Colors.white10,
+                  color: hasActiveMotion
+                      ? const Color(0xFFFFD600).withValues(alpha: 0.2)
+                      : Colors.white10,
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: hasActiveMotion ? const Color(0xFFFFD600) : Colors.white24),
+                  border: Border.all(
+                      color: hasActiveMotion
+                          ? const Color(0xFFFFD600)
+                          : Colors.white24),
                 ),
                 child: Text(
                   hasActiveMotion ? "DYNAMIC MOVEMENT" : "STATIC SCENE",
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
-                    color: hasActiveMotion ? const Color(0xFFFFD600) : Colors.white54,
+                    color: hasActiveMotion
+                        ? const Color(0xFFFFD600)
+                        : Colors.white54,
                   ),
                 ),
               ),
@@ -970,7 +1140,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           // Motion Energy Bar
           Row(
             children: [
-              const Text("SCENE ACTIVITY:", style: TextStyle(fontSize: 10, color: Colors.white54, fontWeight: FontWeight.bold)),
+              const Text("SCENE ACTIVITY:",
+                  style: TextStyle(
+                      fontSize: 10,
+                      color: Colors.white54,
+                      fontWeight: FontWeight.bold)),
               const SizedBox(width: 8),
               Expanded(
                 child: ClipRRect(
@@ -979,7 +1153,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                     value: motionEnergy.clamp(0.05, 1.0),
                     backgroundColor: Colors.white10,
                     valueColor: AlwaysStoppedAnimation<Color>(
-                      motionEnergy > 0.5 ? const Color(0xFFFF1744) : (motionEnergy > 0.2 ? const Color(0xFFFFD600) : const Color(0xFF00E5FF)),
+                      motionEnergy > 0.5
+                          ? const Color(0xFFFF1744)
+                          : (motionEnergy > 0.2
+                              ? const Color(0xFFFFD600)
+                              : const Color(0xFF00E5FF)),
                     ),
                     minHeight: 6,
                   ),
@@ -991,7 +1169,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.bold,
-                  color: motionEnergy > 0.5 ? const Color(0xFFFF1744) : const Color(0xFF00E5FF),
+                  color: motionEnergy > 0.5
+                      ? const Color(0xFFFF1744)
+                      : const Color(0xFF00E5FF),
                 ),
               ),
             ],
@@ -1005,20 +1185,24 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               if (obs.motionType == ObjectMotionType.approachingTowardsUser) {
                 motionIcon = Icons.trending_down;
                 motionColor = const Color(0xFFFF1744);
-              } else if (obs.motionType == ObjectMotionType.movingAwayFromUser) {
+              } else if (obs.motionType ==
+                  ObjectMotionType.movingAwayFromUser) {
                 motionIcon = Icons.trending_up;
                 motionColor = const Color(0xFF76FF03);
-              } else if (obs.motionType == ObjectMotionType.crossingLeftToRight) {
+              } else if (obs.motionType ==
+                  ObjectMotionType.crossingLeftToRight) {
                 motionIcon = Icons.arrow_forward;
                 motionColor = const Color(0xFF00E5FF);
-              } else if (obs.motionType == ObjectMotionType.crossingRightToLeft) {
+              } else if (obs.motionType ==
+                  ObjectMotionType.crossingRightToLeft) {
                 motionIcon = Icons.arrow_back;
                 motionColor = const Color(0xFF00E5FF);
               }
 
               return Container(
                 margin: const EdgeInsets.only(bottom: 6),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 decoration: BoxDecoration(
                   color: motionColor.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(8),
@@ -1034,24 +1218,32 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                         children: [
                           Text(
                             obs.detailedDescription,
-                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                            style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white),
                           ),
                           Text(
                             "Closing Speed: ${obs.velocityMps.abs()} m/s • TTC: ${obs.ttcSeconds}s • Vector: ${obs.clockPosition}",
-                            style: const TextStyle(fontSize: 10, color: Colors.white70),
+                            style: const TextStyle(
+                                fontSize: 10, color: Colors.white70),
                           ),
                         ],
                       ),
                     ),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
                         color: motionColor,
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
                         obs.formattedMotionBadge,
-                        style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.black),
+                        style: const TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black),
                       ),
                     ),
                   ],
@@ -1071,7 +1263,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         color: const Color(0xFF131B2A),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: hasCriticalHazard ? const Color(0xFFFF1744).withValues(alpha: 0.5) : Colors.white10,
+          color: hasCriticalHazard
+              ? const Color(0xFFFF1744).withValues(alpha: 0.5)
+              : Colors.white10,
         ),
       ),
       child: Column(
@@ -1082,11 +1276,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             children: [
               const Row(
                 children: [
-                  Icon(Icons.remove_red_eye_outlined, color: Color(0xFF00E5FF), size: 18),
+                  Icon(Icons.remove_red_eye_outlined,
+                      color: Color(0xFF00E5FF), size: 18),
                   SizedBox(width: 8),
                   Text(
                     "ON-DEVICE NEURAL VISION",
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1),
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.1),
                   ),
                 ],
               ),
@@ -1115,46 +1313,57 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           if (_activeObstacles.isNotEmpty) ...[
             const SizedBox(height: 10),
             ..._activeObstacles.map((obs) => Container(
-              margin: const EdgeInsets.only(bottom: 6),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: obs.isHazard ? const Color(0xFFFF1744).withValues(alpha: 0.15) : const Color(0xFF00E5FF).withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: obs.isHazard ? const Color(0xFFFF1744) : const Color(0xFF00E5FF),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    obs.motionType == ObjectMotionType.approachingTowardsUser
-                        ? Icons.directions_walk
-                        : obs.motionType == ObjectMotionType.overheadHazard
-                            ? Icons.warning_rounded
-                            : obs.isHazard
-                                ? Icons.warning_amber_rounded
-                                : Icons.info_outline,
-                    color: obs.isHazard ? const Color(0xFFFF1744) : const Color(0xFF00E5FF),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          "${obs.detailedDescription} (${obs.clockPosition})",
-                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
-                        ),
-                        Text(
-                          "Distance: ${obs.distanceMeters.toStringAsFixed(1)}m | TTC: ${obs.ttcSeconds.toStringAsFixed(1)}s | ${(obs.confidence * 100).toInt()}% Conf",
-                          style: const TextStyle(fontSize: 11, color: Colors.white70),
-                        ),
-                      ],
+                  margin: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: obs.isHazard
+                        ? const Color(0xFFFF1744).withValues(alpha: 0.15)
+                        : const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: obs.isHazard
+                          ? const Color(0xFFFF1744)
+                          : const Color(0xFF00E5FF),
                     ),
-                  )
-                ],
-              ),
-            )),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        obs.motionType ==
+                                ObjectMotionType.approachingTowardsUser
+                            ? Icons.directions_walk
+                            : obs.motionType == ObjectMotionType.overheadHazard
+                                ? Icons.warning_rounded
+                                : obs.isHazard
+                                    ? Icons.warning_amber_rounded
+                                    : Icons.info_outline,
+                        color: obs.isHazard
+                            ? const Color(0xFFFF1744)
+                            : const Color(0xFF00E5FF),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              "${obs.detailedDescription} (${obs.clockPosition})",
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white),
+                            ),
+                            Text(
+                              "Distance: ${obs.distanceMeters.toStringAsFixed(1)}m | TTC: ${obs.ttcSeconds.toStringAsFixed(1)}s | ${(obs.confidence * 100).toInt()}% Conf",
+                              style: const TextStyle(
+                                  fontSize: 11, color: Colors.white70),
+                            ),
+                          ],
+                        ),
+                      )
+                    ],
+                  ),
+                )),
           ]
         ],
       ),
@@ -1201,12 +1410,19 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: hasInternet ? const Color(0xFF4338CA) : const Color(0xFF065F46),
+                  color: hasInternet
+                      ? const Color(0xFF4338CA)
+                      : const Color(0xFF065F46),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
-                  hasInternet ? (isAnalyzing ? "ANALYZING..." : "GEMINI 2.0") : "STANDALONE EDGE",
-                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
+                  hasInternet
+                      ? (isAnalyzing ? "ANALYZING..." : "GEMINI 2.0")
+                      : "STANDALONE EDGE",
+                  style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white),
                 ),
               )
             ],
@@ -1219,16 +1435,21 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                 decoration: BoxDecoration(
                   color: const Color(0xFF1E1B4B),
                   borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.4)),
+                  border: Border.all(
+                      color: const Color(0xFF6366F1).withValues(alpha: 0.4)),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.location_city, size: 12, color: Color(0xFFA5B4FC)),
+                    const Icon(Icons.location_city,
+                        size: 12, color: Color(0xFFA5B4FC)),
                     const SizedBox(width: 4),
                     Text(
                       scene.environmentType,
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFFA5B4FC)),
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFFA5B4FC)),
                     ),
                   ],
                 ),
@@ -1237,21 +1458,28 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: scene.pathwayStatus.contains("Clear") ? const Color(0xFF064E3B) : const Color(0xFF7F1D1D),
+                  color: scene.pathwayStatus.contains("Clear")
+                      ? const Color(0xFF064E3B)
+                      : const Color(0xFF7F1D1D),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      scene.pathwayStatus.contains("Clear") ? Icons.check_circle_outline : Icons.warning_amber_rounded,
+                      scene.pathwayStatus.contains("Clear")
+                          ? Icons.check_circle_outline
+                          : Icons.warning_amber_rounded,
                       size: 12,
                       color: Colors.white,
                     ),
                     const SizedBox(width: 4),
                     Text(
                       scene.pathwayStatus,
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white),
                     ),
                   ],
                 ),
@@ -1275,16 +1503,21 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               decoration: BoxDecoration(
                 color: const Color(0xFF172554),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFF3B82F6).withValues(alpha: 0.3)),
+                border: Border.all(
+                    color: const Color(0xFF3B82F6).withValues(alpha: 0.3)),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.assistant_direction, size: 14, color: Color(0xFF60A5FA)),
+                  const Icon(Icons.assistant_direction,
+                      size: 14, color: Color(0xFF60A5FA)),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
                       scene.recommendedAction,
-                      style: const TextStyle(fontSize: 11, color: Color(0xFF93C5FD), fontWeight: FontWeight.w600),
+                      style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF93C5FD),
+                          fontWeight: FontWeight.w600),
                     ),
                   ),
                 ],
@@ -1296,11 +1529,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
             Wrap(
               spacing: 6,
               runSpacing: 4,
-              children: scene.detailedObjects.map((item) => Chip(
-                backgroundColor: const Color(0xFF312E81),
-                label: Text(item, style: const TextStyle(fontSize: 11, color: Colors.white)),
-                visualDensity: VisualDensity.compact,
-              )).toList(),
+              children: scene.detailedObjects
+                  .map((item) => Chip(
+                        backgroundColor: const Color(0xFF312E81),
+                        label: Text(item,
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.white)),
+                        visualDensity: VisualDensity.compact,
+                      ))
+                  .toList(),
             ),
           ],
           const SizedBox(height: 12),
@@ -1311,7 +1548,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   ? null
                   : () => _explainSituation(),
               icon: (_isExplainingSituation || isAnalyzing)
-                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.record_voice_over, size: 16),
               label: Text((_isExplainingSituation || isAnalyzing)
                   ? "Explaining Situation..."
@@ -1319,7 +1560,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF4F46E5),
                 foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
               ),
             ),
           )
@@ -1344,7 +1586,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           children: [
             Icon(Icons.add_location_alt, color: Color(0xFFFFD600), size: 20),
             SizedBox(width: 8),
-            Text("Pin Location / Room", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+            Text("Pin Location / Room",
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold)),
           ],
         ),
         content: Column(
@@ -1361,12 +1607,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               style: const TextStyle(color: Colors.white, fontSize: 13),
               decoration: InputDecoration(
                 labelText: "Place / Room Name *",
-                labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 12),
+                labelStyle:
+                    const TextStyle(color: Color(0xFF00E5FF), fontSize: 12),
                 hintText: "e.g. Room 304, HOD Office, Robotics Lab",
                 hintStyle: const TextStyle(color: Colors.white30, fontSize: 12),
                 filled: true,
                 fillColor: const Color(0xFF1E293B),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide.none),
               ),
             ),
             const SizedBox(height: 10),
@@ -1375,12 +1624,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               style: const TextStyle(color: Colors.white, fontSize: 13),
               decoration: InputDecoration(
                 labelText: "Block / Building (Optional)",
-                labelStyle: const TextStyle(color: Color(0xFFFFD600), fontSize: 12),
+                labelStyle:
+                    const TextStyle(color: Color(0xFFFFD600), fontSize: 12),
                 hintText: "e.g. Block B - CSE, Science Block",
                 hintStyle: const TextStyle(color: Colors.white30, fontSize: 12),
                 filled: true,
                 fillColor: const Color(0xFF1E293B),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide.none),
               ),
             ),
           ],
@@ -1388,7 +1640,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text("CANCEL", style: TextStyle(color: Colors.white54)),
+            child:
+                const Text("CANCEL", style: TextStyle(color: Colors.white54)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -1408,7 +1661,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                 setState(() {});
               }
             },
-            child: const Text("SAVE PIN", style: TextStyle(fontWeight: FontWeight.bold)),
+            child: const Text("SAVE PIN",
+                style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -1467,8 +1721,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         : places.where((p) {
             return p.name.toLowerCase().contains(queryText) ||
                 p.category.toLowerCase().contains(queryText) ||
-                (p.blockName != null && p.blockName!.toLowerCase().contains(queryText)) ||
-                (p.address != null && p.address!.toLowerCase().contains(queryText)) ||
+                (p.blockName != null &&
+                    p.blockName!.toLowerCase().contains(queryText)) ||
+                (p.address != null &&
+                    p.address!.toLowerCase().contains(queryText)) ||
                 p.aliases.any((a) => a.toLowerCase().contains(queryText));
           }).toList();
 
@@ -1478,7 +1734,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         color: const Color(0xFF131B2A),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isNavigating ? phaseColor.withValues(alpha: 0.8) : Colors.white10,
+          color:
+              isNavigating ? phaseColor.withValues(alpha: 0.8) : Colors.white10,
           width: isNavigating ? 1.8 : 1.0,
         ),
       ),
@@ -1497,7 +1754,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                     const Flexible(
                       child: Text(
                         "CAMPUS & DESTINATION NAVIGATION",
-                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.1),
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1.1),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
@@ -1506,16 +1766,24 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               ),
               const SizedBox(width: 4),
               IconButton(
-                icon: const Icon(Icons.add_location_alt, size: 18, color: Color(0xFFFFD600)),
+                icon: const Icon(Icons.add_location_alt,
+                    size: 18, color: Color(0xFFFFD600)),
                 tooltip: "Pin Current GPS Location / Room",
                 onPressed: _showSaveCustomPlaceDialog,
               ),
               IconButton(
                 icon: isLoading
-                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00E5FF)))
-                    : const Icon(Icons.refresh, size: 18, color: Color(0xFF00E5FF)),
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Color(0xFF00E5FF)))
+                    : const Icon(Icons.refresh,
+                        size: 18, color: Color(0xFF00E5FF)),
                 tooltip: "Refresh GPS & Locations",
-                onPressed: isLoading ? null : () => _navService.fetchNearbyLocations4km(force: true),
+                onPressed: isLoading
+                    ? null
+                    : () => _navService.fetchNearbyLocations4km(force: true),
               ),
             ],
           ),
@@ -1542,29 +1810,38 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                           children: [
                             Text(
                               dest.name.toUpperCase(),
-                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white),
                               overflow: TextOverflow.ellipsis,
                             ),
-                            if (dest.blockName != null && dest.blockName!.isNotEmpty)
+                            if (dest.blockName != null &&
+                                dest.blockName!.isNotEmpty)
                               Padding(
                                 padding: const EdgeInsets.only(top: 2.0),
                                 child: Text(
                                   "🏛️ Building: ${dest.blockName!}",
-                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFFFD600)),
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFFFFD600)),
                                 ),
                               ),
                           ],
                         ),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
                           color: Colors.black.withValues(alpha: 0.6),
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
                           dest.category,
-                          style: const TextStyle(fontSize: 10, color: Colors.white70),
+                          style: const TextStyle(
+                              fontSize: 10, color: Colors.white70),
                         ),
                       ),
                     ],
@@ -1576,10 +1853,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("DISTANCE & BEARING", style: TextStyle(fontSize: 9, color: Colors.white54)),
+                            const Text("DISTANCE & BEARING",
+                                style: TextStyle(
+                                    fontSize: 9, color: Colors.white54)),
                             Text(
                               "${(navState?.distanceMeters ?? 0.0) >= 1000 ? ((navState?.distanceMeters ?? 0.0) / 1000).toStringAsFixed(1) + 'km' : (navState?.distanceMeters ?? 0.0).toStringAsFixed(0) + 'm'} • ${navState?.clockDirection ?? '12 o\'clock'}",
-                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: phaseColor),
+                              style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: phaseColor),
                             ),
                           ],
                         ),
@@ -1588,10 +1870,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("NAVIGATION PHASE", style: TextStyle(fontSize: 9, color: Colors.white54)),
+                            const Text("NAVIGATION PHASE",
+                                style: TextStyle(
+                                    fontSize: 9, color: Colors.white54)),
                             Text(
                               phaseTitle,
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white),
                             ),
                           ],
                         ),
@@ -1608,12 +1895,16 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                       ),
                       child: Row(
                         children: [
-                          const Icon(Icons.check_circle, size: 14, color: Color(0xFF00E676)),
+                          const Icon(Icons.check_circle,
+                              size: 14, color: Color(0xFF00E676)),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
                               "OCR Verified Board: ${_navService.targetBoard!.text}",
-                              style: const TextStyle(fontSize: 11, color: Color(0xFF00E676), fontWeight: FontWeight.bold),
+                              style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF00E676),
+                                  fontWeight: FontWeight.bold),
                             ),
                           ),
                         ],
@@ -1628,7 +1919,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                         _navService.stopNavigation();
                       },
                       icon: const Icon(Icons.stop, size: 16),
-                      label: const Text("Stop Navigation", style: TextStyle(fontSize: 12)),
+                      label: const Text("Stop Navigation",
+                          style: TextStyle(fontSize: 12)),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.red.withValues(alpha: 0.8),
                         foregroundColor: Colors.white,
@@ -1652,11 +1944,14 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(
                     hintText: "Search nearby pharmacy, hospital, cafe...",
-                    hintStyle: const TextStyle(fontSize: 11, color: Colors.white38),
-                    prefixIcon: const Icon(Icons.search, size: 16, color: Color(0xFF00E5FF)),
+                    hintStyle:
+                        const TextStyle(fontSize: 11, color: Colors.white38),
+                    prefixIcon: const Icon(Icons.search,
+                        size: 16, color: Color(0xFF00E5FF)),
                     filled: true,
                     fillColor: const Color(0xFF1E293B),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
                       borderSide: BorderSide.none,
@@ -1676,7 +1971,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 child: Center(
                   child: Text(
-                    isLoading ? "Searching nearby locations..." : "No places found matching '$queryText'.",
+                    isLoading
+                        ? "Searching nearby locations..."
+                        : "No places found matching '$queryText'.",
                     style: const TextStyle(fontSize: 12, color: Colors.white54),
                   ),
                 ),
@@ -1691,30 +1988,47 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   final isCurrentTarget = dest?.id == item.id;
 
                   IconData catIcon = Icons.place;
-                  if (item.category == "University & Campus" || item.isCampusBuilding) catIcon = Icons.school;
-                  else if (item.category == "Saved My Places" || item.isCustomSaved) catIcon = Icons.push_pin;
-                  else if (item.category == "Medical & Health") catIcon = Icons.local_hospital;
-                  else if (item.category == "Food & Dining") catIcon = Icons.restaurant;
-                  else if (item.category == "Groceries & Shopping") catIcon = Icons.shopping_cart;
-                  else if (item.category == "Transit & Stations") catIcon = Icons.directions_bus;
-                  else if (item.category == "Banks & ATMs") catIcon = Icons.account_balance;
-                  else if (item.category == "Landmarks & Parks") catIcon = Icons.park;
+                  if (item.category == "University & Campus" ||
+                      item.isCampusBuilding)
+                    catIcon = Icons.school;
+                  else if (item.category == "Saved My Places" ||
+                      item.isCustomSaved)
+                    catIcon = Icons.push_pin;
+                  else if (item.category == "Medical & Health")
+                    catIcon = Icons.local_hospital;
+                  else if (item.category == "Food & Dining")
+                    catIcon = Icons.restaurant;
+                  else if (item.category == "Groceries & Shopping")
+                    catIcon = Icons.shopping_cart;
+                  else if (item.category == "Transit & Stations")
+                    catIcon = Icons.directions_bus;
+                  else if (item.category == "Banks & ATMs")
+                    catIcon = Icons.account_balance;
+                  else if (item.category == "Landmarks & Parks")
+                    catIcon = Icons.park;
 
                   return Container(
                     margin: const EdgeInsets.only(bottom: 6),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                     decoration: BoxDecoration(
                       color: isCurrentTarget
                           ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
                           : const Color(0xFF1E293B),
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
-                        color: isCurrentTarget ? const Color(0xFF00E5FF) : Colors.white10,
+                        color: isCurrentTarget
+                            ? const Color(0xFF00E5FF)
+                            : Colors.white10,
                       ),
                     ),
                     child: Row(
                       children: [
-                        Icon(catIcon, size: 18, color: item.isCampusBuilding ? const Color(0xFFFFD600) : const Color(0xFF00E5FF)),
+                        Icon(catIcon,
+                            size: 18,
+                            color: item.isCampusBuilding
+                                ? const Color(0xFFFFD600)
+                                : const Color(0xFF00E5FF)),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Column(
@@ -1725,22 +2039,34 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                                   Expanded(
                                     child: Text(
                                       item.name,
-                                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                                      style: const TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white),
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
-                                  if (item.blockName != null && item.blockName!.isNotEmpty) ...[
+                                  if (item.blockName != null &&
+                                      item.blockName!.isNotEmpty) ...[
                                     const SizedBox(width: 4),
                                     Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 5, vertical: 1.5),
                                       decoration: BoxDecoration(
-                                        color: const Color(0xFFFFD600).withValues(alpha: 0.2),
+                                        color: const Color(0xFFFFD600)
+                                            .withValues(alpha: 0.2),
                                         borderRadius: BorderRadius.circular(4),
-                                        border: Border.all(color: const Color(0xFFFFD600).withValues(alpha: 0.6), width: 0.8),
+                                        border: Border.all(
+                                            color: const Color(0xFFFFD600)
+                                                .withValues(alpha: 0.6),
+                                            width: 0.8),
                                       ),
                                       child: Text(
                                         item.blockName!,
-                                        style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFFFFD600)),
+                                        style: const TextStyle(
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.bold,
+                                            color: Color(0xFFFFD600)),
                                       ),
                                     ),
                                   ],
@@ -1749,7 +2075,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                               if (item.address != null)
                                 Text(
                                   item.address!,
-                                  style: const TextStyle(fontSize: 10, color: Colors.white54),
+                                  style: const TextStyle(
+                                      fontSize: 10, color: Colors.white54),
                                   overflow: TextOverflow.ellipsis,
                                 ),
                             ],
@@ -1760,14 +2087,19 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                                color: const Color(0xFF00E5FF)
+                                    .withValues(alpha: 0.15),
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               child: Text(
                                 "${item.formattedDistance} • ${item.clockZone ?? '12 o\'clock'}",
-                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF00E5FF)),
+                                style: const TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF00E5FF)),
                               ),
                             ),
                             const SizedBox(height: 4),
@@ -1778,14 +2110,20 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                                 setState(() {});
                               },
                               child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 2),
                                 decoration: BoxDecoration(
-                                  color: isCurrentTarget ? Colors.green : const Color(0xFF00E5FF),
+                                  color: isCurrentTarget
+                                      ? Colors.green
+                                      : const Color(0xFF00E5FF),
                                   borderRadius: BorderRadius.circular(4),
                                 ),
                                 child: Text(
                                   isCurrentTarget ? "ACTIVE" : "NAVIGATE",
-                                  style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.black),
+                                  style: const TextStyle(
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.black),
                                 ),
                               ),
                             ),
@@ -1815,14 +2153,22 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text("12-HOUR CLOCK RADAR", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+              const Text("12-HOUR CLOCK RADAR",
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.2)),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: const Color(0xFF00E5FF).withValues(alpha: 0.2),
                   borderRadius: BorderRadius.circular(4),
                 ),
-                child: Text("TARGET: $_clockDirection:00", style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF00E5FF))),
+                child: Text("TARGET: $_clockDirection:00",
+                    style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF00E5FF))),
               )
             ],
           ),
@@ -1837,7 +2183,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   height: 170,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.3)),
+                    border: Border.all(
+                        color: const Color(0xFF00E5FF).withValues(alpha: 0.3)),
                   ),
                 ),
                 Container(
@@ -1846,14 +2193,39 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: const Color(0xFF1B273A),
-                    border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.6)),
+                    border: Border.all(
+                        color: const Color(0xFF00E5FF).withValues(alpha: 0.6)),
                   ),
                 ),
                 // Clock Numbers
-                const Positioned(top: 8, child: Text("12", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF00E5FF)))),
-                const Positioned(right: 8, child: Text("3", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white54))),
-                const Positioned(bottom: 8, child: Text("6", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white54))),
-                const Positioned(left: 8, child: Text("9", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white54))),
+                const Positioned(
+                    top: 8,
+                    child: Text("12",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: Color(0xFF00E5FF)))),
+                const Positioned(
+                    right: 8,
+                    child: Text("3",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: Colors.white54))),
+                const Positioned(
+                    bottom: 8,
+                    child: Text("6",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: Colors.white54))),
+                const Positioned(
+                    left: 8,
+                    child: Text("9",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: Colors.white54))),
 
                 // Target Pointer
                 Transform.rotate(
@@ -1872,7 +2244,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                     ],
                   ),
                 ),
-                const Icon(Icons.navigation, size: 24, color: Color(0xFF00E5FF)),
+                const Icon(Icons.navigation,
+                    size: 24, color: Color(0xFF00E5FF)),
               ],
             ),
           ),
@@ -1880,8 +2253,17 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text("Real PDR Steps: $_stepCount", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white)),
-              Text("Accumulated Drift: ${_driftMeters.toStringAsFixed(2)}m", style: TextStyle(fontSize: 12, color: _driftMeters > 0 ? Colors.orange : Colors.greenAccent)),
+              Text("Real PDR Steps: $_stepCount",
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+              Text("Accumulated Drift: ${_driftMeters.toStringAsFixed(2)}m",
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: _driftMeters > 0
+                          ? Colors.orange
+                          : Colors.greenAccent)),
             ],
           ),
         ],
@@ -1896,7 +2278,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
         color: const Color(0xFF131B2A),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: hasCriticalHazard ? const Color(0xFFFF1744).withValues(alpha: 0.5) : Colors.white10,
+          color: hasCriticalHazard
+              ? const Color(0xFFFF1744).withValues(alpha: 0.5)
+              : Colors.white10,
         ),
       ),
       child: Column(
@@ -1909,13 +2293,19 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                 children: [
                   Icon(Icons.volume_up, color: Color(0xFF00E5FF), size: 18),
                   SizedBox(width: 8),
-                  Text("AUDIO MUTEX GOVERNANCE", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
+                  Text("AUDIO MUTEX GOVERNANCE",
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.1)),
                 ],
               ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: _isSpeaking ? const Color(0xFF76FF03).withValues(alpha: 0.2) : Colors.white10,
+                  color: _isSpeaking
+                      ? const Color(0xFF76FF03).withValues(alpha: 0.2)
+                      : Colors.white10,
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(
@@ -1923,7 +2313,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
-                    color: _isSpeaking ? const Color(0xFF76FF03) : Colors.white54,
+                    color:
+                        _isSpeaking ? const Color(0xFF76FF03) : Colors.white54,
                   ),
                 ),
               )
@@ -1932,7 +2323,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
           const SizedBox(height: 8),
           Text(
             "\"$_activeSpeech\"",
-            style: const TextStyle(fontSize: 13, fontStyle: FontStyle.italic, color: Colors.white),
+            style: const TextStyle(
+                fontSize: 13, fontStyle: FontStyle.italic, color: Colors.white),
           ),
         ],
       ),
@@ -1955,12 +2347,14 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
                   );
                 },
                 icon: const Icon(Icons.refresh, size: 16),
-                label: const Text("Rescan Vision", style: TextStyle(fontSize: 12)),
+                label:
+                    const Text("Rescan Vision", style: TextStyle(fontSize: 12)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF00E5FF),
                   foregroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ),
@@ -1969,13 +2363,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
               child: ElevatedButton.icon(
                 onPressed: _clearHazards,
                 icon: const Icon(Icons.check_circle_outline, size: 16),
-                label: const Text("Clear Hazards", style: TextStyle(fontSize: 12)),
+                label:
+                    const Text("Clear Hazards", style: TextStyle(fontSize: 12)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1E293B),
                   foregroundColor: const Color(0xFF76FF03),
                   side: const BorderSide(color: Color(0xFF76FF03)),
                   padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ),
@@ -1984,4 +2380,455 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp> with WidgetsBindingOb
       ],
     );
   }
+
+  Widget _buildModeSwitcherTabBar() {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: GestureDetector(
+              onTap: () {
+                setState(() => _activeNavTab = 0);
+                _audioMutex.speak(
+                  text: "Switched to Safety Navigation and Hazard HUD.",
+                  priority: AudioPriority.level2Navigation,
+                  haptic: true,
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                decoration: BoxDecoration(
+                  color: _activeNavTab == 0
+                      ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: _activeNavTab == 0
+                        ? const Color(0xFF00E5FF)
+                        : Colors.transparent,
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.navigation,
+                      size: 16,
+                      color: _activeNavTab == 0
+                          ? const Color(0xFF00E5FF)
+                          : Colors.white60,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      "Safety Nav HUD",
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: _activeNavTab == 0
+                            ? const Color(0xFF00E5FF)
+                            : Colors.white60,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: GestureDetector(
+              onTap: () {
+                setState(() => _activeNavTab = 1);
+                _audioMutex.speak(
+                  text: "Switched to Daily Living Tools. Barcode and Currency scanner ready.",
+                  priority: AudioPriority.level2Navigation,
+                  haptic: true,
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                decoration: BoxDecoration(
+                  color: _activeNavTab == 1
+                      ? const Color(0xFF76FF03).withValues(alpha: 0.2)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: _activeNavTab == 1
+                        ? const Color(0xFF76FF03)
+                        : Colors.transparent,
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.shopping_bag_outlined,
+                      size: 16,
+                      color: _activeNavTab == 1
+                          ? const Color(0xFF76FF03)
+                          : Colors.white60,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      "Daily Living Tools",
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: _activeNavTab == 1
+                            ? const Color(0xFF76FF03)
+                            : Colors.white60,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDailyLivingToolsCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF76FF03).withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF76FF03).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.inventory_2_outlined,
+                    color: Color(0xFF76FF03), size: 20),
+              ),
+              const SizedBox(width: 10),
+              const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "DAILY LIVING ASSISTANT",
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.2,
+                      color: Color(0xFF76FF03),
+                    ),
+                  ),
+                  Text(
+                    "Offline Barcode, Allergens & Currency Haptics",
+                    style: TextStyle(fontSize: 11, color: Colors.white60),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+
+          // 1. Barcode & Product Scanner Section
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.qr_code_scanner, size: 16, color: Color(0xFF00E5FF)),
+                        SizedBox(width: 6),
+                        Text(
+                          "Product & Barcode Reader",
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        "OpenFoodFacts",
+                        style: TextStyle(fontSize: 10, color: Color(0xFF00E5FF)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                if (_lastScannedProduct != null) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0A0E17),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: _lastScannedProduct!.isFound
+                            ? const Color(0xFF76FF03)
+                            : Colors.orangeAccent,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _lastScannedProduct!.name,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                        if (_lastScannedProduct!.allergens.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            "⚠️ Contains: ${_lastScannedProduct!.allergens}",
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFFFF5252),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 4),
+                        Text(
+                          _lastScannedProduct!.summarySpeech,
+                          style: const TextStyle(fontSize: 11, color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          // Quick test scanner with sample barcode
+                          _barcodeService.handleBarcodeDetected("012000000133");
+                        },
+                        icon: const Icon(Icons.play_arrow, size: 16),
+                        label: const Text("Scan Pepsi (Demo)", style: TextStyle(fontSize: 11)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF00E5FF),
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          // Milk with allergen warning
+                          _barcodeService.handleBarcodeDetected("078742351865");
+                        },
+                        icon: const Icon(Icons.warning_amber_rounded, size: 16),
+                        label: const Text("Scan Milk (Allergen)", style: TextStyle(fontSize: 11)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1E293B),
+                          foregroundColor: const Color(0xFFFFD700),
+                          side: const BorderSide(color: Color(0xFFFFD700)),
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          // 2. Offline Currency Recognizer Section
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.payments_outlined, size: 16, color: Color(0xFF76FF03)),
+                        SizedBox(width: 6),
+                        Text(
+                          "Offline Currency & Haptics",
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                    DropdownButton<CurrencyCode>(
+                      value: _currencyService.selectedCurrency,
+                      dropdownColor: const Color(0xFF131B2A),
+                      underline: const SizedBox(),
+                      icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF76FF03), size: 18),
+                      items: CurrencyCode.values.map((curr) {
+                        return DropdownMenuItem(
+                          value: curr,
+                          child: Text(
+                            curr.name.toUpperCase(),
+                            style: const TextStyle(fontSize: 12, color: Color(0xFF76FF03)),
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (newCurr) {
+                        if (newCurr != null) {
+                          setState(() {
+                            _currencyService.setCurrency(newCurr);
+                          });
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (_lastCurrencyResult != null && _lastCurrencyResult!.isIdentified) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0A0E17),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFF76FF03)),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF76FF03).withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            "${_lastCurrencyResult!.denomination?.symbol}${_lastCurrencyResult!.denomination?.value}",
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF76FF03),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _lastCurrencyResult!.denomination?.spokenText ?? '',
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              Text(
+                                "Tactile pattern: ${_lastCurrencyResult!.denomination?.hapticPatternMs.length} pulses",
+                                style: const TextStyle(fontSize: 10, color: Colors.white54),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    ElevatedButton(
+                      onPressed: () {
+                        _currencyService.processVisualTokens(
+                          detectedTexts: ["20", "DOLLARS", "TWENTY"],
+                          confidence: 0.95,
+                        );
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0A0E17),
+                        foregroundColor: const Color(0xFF76FF03),
+                        side: const BorderSide(color: Color(0xFF76FF03)),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      ),
+                      child: const Text("Test \$20 Note", style: TextStyle(fontSize: 11)),
+                    ),
+                    ElevatedButton(
+                      onPressed: () {
+                        _currencyService.processVisualTokens(
+                          detectedTexts: ["100", "HUNDRED", "DOLLARS"],
+                          confidence: 0.95,
+                        );
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0A0E17),
+                        foregroundColor: const Color(0xFF76FF03),
+                        side: const BorderSide(color: Color(0xFF76FF03)),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      ),
+                      child: const Text("Test \$100 Note", style: TextStyle(fontSize: 11)),
+                    ),
+                    ElevatedButton(
+                      onPressed: () {
+                        _currencyService.processVisualTokens(
+                          detectedTexts: ["500", "RUPEES", "INDIA"],
+                          confidence: 0.92,
+                        );
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0A0E17),
+                        foregroundColor: const Color(0xFF00E5FF),
+                        side: const BorderSide(color: Color(0xFF00E5FF)),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      ),
+                      child: const Text("Test ₹500 Note", style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
+

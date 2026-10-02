@@ -160,46 +160,95 @@ class OnDeviceObstacleDetector {
 
   // Calibrated focal length ratio for mobile smartphone cameras (~68° vertical FOV)
   static const double _focalLengthRatio = 1.15;
-  static const double _defaultConfidenceThreshold = 0.30;
-  static const double _personConfidenceThreshold = 0.38;
-  static const double _iouThreshold = 0.45;
+  static const double _defaultConfidenceThreshold = 0.26;
+  static const double _personConfidenceThreshold = 0.32;
+  static const double _smallItemConfidenceThreshold = 0.35;
+  static const double _sameClassIouThreshold = 0.45;
+  static const double _crossClassIouThreshold = 0.72;
 
-  // Real-world physical dimensions (Height, Width in meters, AudioPriority, Spoken Name)
+  // Real-world physical dimensions (Height, Width in meters, AudioPriority, Spoken Name) for all 80 COCO classes
   static const Map<String, _ObjectPrior> _priors = {
-    // Pedestrians & Living Entities (Default to Safety tier so it doesn't spam)
+    // 1. Pedestrians & Living Entities
     "person": _ObjectPrior(1.72, 0.50, AudioPriority.level1Safety, "Person"),
-    "dog": _ObjectPrior(0.60, 0.75, AudioPriority.level1Safety, "Dog"),
+    "bird": _ObjectPrior(0.20, 0.25, AudioPriority.level3Context, "Bird"),
     "cat": _ObjectPrior(0.30, 0.45, AudioPriority.level2Navigation, "Cat"),
+    "dog": _ObjectPrior(0.60, 0.75, AudioPriority.level1Safety, "Dog"),
     "horse": _ObjectPrior(1.80, 2.00, AudioPriority.level0Critical, "Horse"),
+    "sheep": _ObjectPrior(0.90, 1.10, AudioPriority.level1Safety, "Sheep"),
+    "cow": _ObjectPrior(1.50, 2.20, AudioPriority.level0Critical, "Cow"),
+    "elephant": _ObjectPrior(3.00, 3.50, AudioPriority.level0Critical, "Elephant"),
+    "bear": _ObjectPrior(1.80, 1.40, AudioPriority.level0Critical, "Bear"),
+    "zebra": _ObjectPrior(1.50, 2.00, AudioPriority.level0Critical, "Zebra"),
+    "giraffe": _ObjectPrior(4.80, 2.20, AudioPriority.level0Critical, "Giraffe"),
 
-    // Vehicles & Critical Traffic Hazards
-    "car": _ObjectPrior(1.50, 1.80, AudioPriority.level0Critical, "Car"),
-    "bus": _ObjectPrior(3.20, 2.50, AudioPriority.level0Critical, "Bus"),
-    "truck": _ObjectPrior(3.00, 2.40, AudioPriority.level0Critical, "Truck"),
-    "motorcycle": _ObjectPrior(1.20, 0.80, AudioPriority.level0Critical, "Motorcycle"),
+    // 2. Vehicles & Critical Traffic Hazards (Level 0 Critical)
     "bicycle": _ObjectPrior(1.05, 1.65, AudioPriority.level0Critical, "Bicycle"),
+    "car": _ObjectPrior(1.50, 1.80, AudioPriority.level0Critical, "Car"),
+    "motorcycle": _ObjectPrior(1.20, 0.80, AudioPriority.level0Critical, "Motorcycle"),
+    "airplane": _ObjectPrior(8.00, 15.00, AudioPriority.level1Safety, "Airplane"),
+    "bus": _ObjectPrior(3.20, 2.50, AudioPriority.level0Critical, "Bus"),
     "train": _ObjectPrior(3.80, 3.00, AudioPriority.level0Critical, "Train"),
+    "truck": _ObjectPrior(3.00, 2.40, AudioPriority.level0Critical, "Truck"),
+    "boat": _ObjectPrior(2.00, 3.50, AudioPriority.level1Safety, "Boat"),
     "traffic light": _ObjectPrior(0.90, 0.35, AudioPriority.level1Safety, "Traffic light"),
     "fire hydrant": _ObjectPrior(0.75, 0.40, AudioPriority.level1Safety, "Fire hydrant"),
     "stop sign": _ObjectPrior(0.75, 0.75, AudioPriority.level0Critical, "Stop sign"),
     "parking meter": _ObjectPrior(1.20, 0.25, AudioPriority.level1Safety, "Parking meter"),
+    "bench": _ObjectPrior(0.50, 1.50, AudioPriority.level1Safety, "Bench"),
 
-    // Indoor Structures & Furniture
+    // 3. Luggage, Bags & Accessories
+    "backpack": _ObjectPrior(0.48, 0.35, AudioPriority.level2Navigation, "Backpack"),
+    "umbrella": _ObjectPrior(0.85, 0.10, AudioPriority.level2Navigation, "Umbrella"),
+    "handbag": _ObjectPrior(0.30, 0.35, AudioPriority.level3Context, "Handbag"),
+    "tie": _ObjectPrior(0.45, 0.08, AudioPriority.level3Context, "Tie"),
+    "suitcase": _ObjectPrior(0.65, 0.45, AudioPriority.level1Safety, "Suitcase"),
+
+    // 4. Sports & Outdoor Equipment
+    "frisbee": _ObjectPrior(0.04, 0.25, AudioPriority.level3Context, "Frisbee"),
+    "skis": _ObjectPrior(1.70, 0.15, AudioPriority.level2Navigation, "Skis"),
+    "snowboard": _ObjectPrior(1.50, 0.30, AudioPriority.level2Navigation, "Snowboard"),
+    "sports ball": _ObjectPrior(0.22, 0.22, AudioPriority.level2Navigation, "Ball"),
+    "kite": _ObjectPrior(0.80, 0.80, AudioPriority.level3Context, "Kite"),
+    "baseball bat": _ObjectPrior(0.85, 0.07, AudioPriority.level2Navigation, "Baseball bat"),
+    "baseball glove": _ObjectPrior(0.25, 0.20, AudioPriority.level3Context, "Baseball glove"),
+    "skateboard": _ObjectPrior(0.15, 0.80, AudioPriority.level1Safety, "Skateboard"),
+    "surfboard": _ObjectPrior(2.00, 0.50, AudioPriority.level1Safety, "Surfboard"),
+    "tennis racket": _ObjectPrior(0.68, 0.28, AudioPriority.level3Context, "Tennis racket"),
+
+    // 5. Kitchenware & Tabletop Dining Items
+    "bottle": _ObjectPrior(0.26, 0.08, AudioPriority.level3Context, "Bottle"),
+    "wine glass": _ObjectPrior(0.20, 0.08, AudioPriority.level3Context, "Wine glass"),
+    "cup": _ObjectPrior(0.12, 0.08, AudioPriority.level3Context, "Cup"),
+    "fork": _ObjectPrior(0.18, 0.03, AudioPriority.level3Context, "Fork"),
+    "knife": _ObjectPrior(0.20, 0.03, AudioPriority.level1Safety, "Knife"),
+    "spoon": _ObjectPrior(0.16, 0.04, AudioPriority.level3Context, "Spoon"),
+    "bowl": _ObjectPrior(0.08, 0.16, AudioPriority.level3Context, "Bowl"),
+
+    // 6. Food & Groceries
+    "banana": _ObjectPrior(0.18, 0.04, AudioPriority.level3Context, "Banana"),
+    "apple": _ObjectPrior(0.08, 0.08, AudioPriority.level3Context, "Apple"),
+    "sandwich": _ObjectPrior(0.07, 0.14, AudioPriority.level3Context, "Sandwich"),
+    "orange": _ObjectPrior(0.08, 0.08, AudioPriority.level3Context, "Orange"),
+    "broccoli": _ObjectPrior(0.14, 0.12, AudioPriority.level3Context, "Broccoli"),
+    "carrot": _ObjectPrior(0.18, 0.03, AudioPriority.level3Context, "Carrot"),
+    "hot dog": _ObjectPrior(0.05, 0.16, AudioPriority.level3Context, "Hot dog"),
+    "pizza": _ObjectPrior(0.04, 0.30, AudioPriority.level3Context, "Pizza"),
+    "donut": _ObjectPrior(0.04, 0.10, AudioPriority.level3Context, "Donut"),
+    "cake": _ObjectPrior(0.12, 0.25, AudioPriority.level3Context, "Cake"),
+
+    // 7. Indoor Furniture & Structural Elements
     "chair": _ObjectPrior(0.85, 0.55, AudioPriority.level1Safety, "Chair"),
     "couch": _ObjectPrior(0.85, 1.80, AudioPriority.level1Safety, "Couch"),
     "sofa": _ObjectPrior(0.85, 1.80, AudioPriority.level1Safety, "Sofa"),
+    "potted plant": _ObjectPrior(0.60, 0.40, AudioPriority.level2Navigation, "Potted plant"),
+    "bed": _ObjectPrior(0.65, 1.60, AudioPriority.level1Safety, "Bed"),
     "dining table": _ObjectPrior(0.75, 1.40, AudioPriority.level1Safety, "Dining table"),
     "table": _ObjectPrior(0.75, 1.20, AudioPriority.level1Safety, "Table"),
-    "bed": _ObjectPrior(0.65, 1.60, AudioPriority.level1Safety, "Bed"),
-    "bench": _ObjectPrior(0.50, 1.50, AudioPriority.level1Safety, "Bench"),
     "toilet": _ObjectPrior(0.75, 0.45, AudioPriority.level1Safety, "Toilet"),
-    "sink": _ObjectPrior(0.85, 0.60, AudioPriority.level1Safety, "Sink"),
-    "refrigerator": _ObjectPrior(1.75, 0.80, AudioPriority.level1Safety, "Refrigerator"),
     "door": _ObjectPrior(2.05, 0.85, AudioPriority.level1Safety, "Door"),
     "stairs": _ObjectPrior(1.50, 1.20, AudioPriority.level0Critical, "Stairs"),
-    "potted plant": _ObjectPrior(0.60, 0.40, AudioPriority.level2Navigation, "Potted plant"),
 
-    // Electronics & Workstation
+    // 8. Workstation & Electronics
     "tv": _ObjectPrior(0.60, 1.00, AudioPriority.level2Navigation, "TV screen"),
     "laptop": _ObjectPrior(0.22, 0.32, AudioPriority.level2Navigation, "Laptop"),
     "mouse": _ObjectPrior(0.04, 0.07, AudioPriority.level3Context, "Mouse"),
@@ -207,19 +256,21 @@ class OnDeviceObstacleDetector {
     "keyboard": _ObjectPrior(0.03, 0.42, AudioPriority.level3Context, "Keyboard"),
     "cell phone": _ObjectPrior(0.15, 0.08, AudioPriority.level3Context, "Cell phone"),
 
-    // Tabletop & Daily Items
-    "bottle": _ObjectPrior(0.26, 0.08, AudioPriority.level3Context, "Bottle"),
-    "cup": _ObjectPrior(0.12, 0.08, AudioPriority.level3Context, "Cup"),
-    "wine glass": _ObjectPrior(0.20, 0.08, AudioPriority.level3Context, "Wine glass"),
-    "bowl": _ObjectPrior(0.08, 0.16, AudioPriority.level3Context, "Bowl"),
+    // 9. Appliances
+    "microwave": _ObjectPrior(0.35, 0.55, AudioPriority.level2Navigation, "Microwave"),
+    "oven": _ObjectPrior(0.85, 0.60, AudioPriority.level1Safety, "Oven"),
+    "toaster": _ObjectPrior(0.20, 0.25, AudioPriority.level3Context, "Toaster"),
+    "sink": _ObjectPrior(0.85, 0.60, AudioPriority.level1Safety, "Sink"),
+    "refrigerator": _ObjectPrior(1.75, 0.80, AudioPriority.level1Safety, "Refrigerator"),
+
+    // 10. Household Objects
     "book": _ObjectPrior(0.03, 0.18, AudioPriority.level3Context, "Book"),
-    "backpack": _ObjectPrior(0.48, 0.35, AudioPriority.level2Navigation, "Backpack"),
-    "umbrella": _ObjectPrior(0.85, 0.10, AudioPriority.level2Navigation, "Umbrella"),
-    "handbag": _ObjectPrior(0.30, 0.35, AudioPriority.level3Context, "Handbag"),
-    "suitcase": _ObjectPrior(0.65, 0.45, AudioPriority.level1Safety, "Suitcase"),
     "clock": _ObjectPrior(0.30, 0.30, AudioPriority.level3Context, "Clock"),
     "vase": _ObjectPrior(0.35, 0.18, AudioPriority.level3Context, "Vase"),
     "scissors": _ObjectPrior(0.02, 0.15, AudioPriority.level3Context, "Scissors"),
+    "teddy bear": _ObjectPrior(0.35, 0.25, AudioPriority.level3Context, "Teddy bear"),
+    "hair drier": _ObjectPrior(0.22, 0.18, AudioPriority.level3Context, "Hair dryer"),
+    "toothbrush": _ObjectPrior(0.18, 0.02, AudioPriority.level3Context, "Toothbrush"),
   };
 
   // Multi-frame temporal persistence to suppress 1-frame transient glitches
@@ -340,8 +391,8 @@ class OnDeviceObstacleDetector {
           preprocessed.scaledH,
         );
 
-        // 5. Non-Maximum Suppression (NMS)
-        final filtered = _applyNms(candidates, _iouThreshold);
+        // 5. High-Recall Class-Aware Non-Maximum Suppression (NMS)
+        final filtered = _applyNms(candidates);
 
         // 6. Calculate Metric Distance & Spatial Clock Position with Temporal Confirmation
         for (final cand in filtered) {
@@ -349,7 +400,7 @@ class OnDeviceObstacleDetector {
           final prior = _getPriorForLabel(label);
 
           final bboxH = cand.yMax - cand.yMin;
-          final normalizedHeight = bboxH.clamp(0.06, 1.0);
+          final normalizedHeight = bboxH.clamp(0.04, 1.0);
 
           // Calibrated pinhole distance estimation
           double rawDistance = (_focalLengthRatio * prior.realHeightMeters) / normalizedHeight;
@@ -370,22 +421,25 @@ class OnDeviceObstacleDetector {
           }
 
           final distanceMeters = double.parse(
-            rawDistance.clamp(0.3, 7.5).toStringAsFixed(1),
+            rawDistance.clamp(0.3, 8.5).toStringAsFixed(1),
           );
 
           // 12-Hour Spatial Clock Position
           final normCenterX = (cand.xMin + cand.xMax) / 2.0;
+          final normCenterY = (cand.yMin + cand.yMax) / 2.0;
           final clock = _calculateClockPosition(normCenterX);
 
-          // Multi-frame temporal persistence key
-          final trackKey = "${cand.label}_$clock";
+          // Spatial-Grid Temporal Persistence Key (avoids jitter while confirming true objects)
+          final gridX = (normCenterX * 5).floor().clamp(0, 4);
+          final gridY = (normCenterY * 5).floor().clamp(0, 4);
+          final trackKey = "${cand.label}_g${gridX}_$gridY";
           currentFrameKeys.add(trackKey);
           final prevCount = _temporalTrackCount[trackKey] ?? 0;
           final currentCount = prevCount + 1;
           _temporalTrackCount[trackKey] = currentCount;
 
-          // Require at least 2 consecutive frames OR confidence (>= 0.45) to confirm
-          if (currentCount < 2 && cand.score < 0.45) {
+          // Require 2 consecutive frames OR solid single-frame confidence (>= 0.40) to confirm
+          if (currentCount < 2 && cand.score < 0.40) {
             continue;
           }
 
@@ -471,6 +525,11 @@ class OnDeviceObstacleDetector {
   ) {
     final List<_DetectionCandidate> list = [];
 
+    // Classes prone to false texture triggers (require higher confidence)
+    const Set<String> smallTextureProneClasses = {
+      "scissors", "tie", "remote", "mouse", "sports ball", "hair drier", "toothbrush"
+    };
+
     for (int col = 0; col < numPredictions; col++) {
       int bestClass = -1;
       double maxScore = 0.0;
@@ -487,10 +546,13 @@ class OnDeviceObstacleDetector {
 
       final labelName = (bestClass < _labels.length) ? _labels[bestClass].toLowerCase() : "obstacle";
 
-      // Class-specific threshold gating (Person at 0.38, others at 0.30)
-      final double requiredThreshold = (labelName == "person")
-          ? _personConfidenceThreshold
-          : _defaultConfidenceThreshold;
+      // Class-adaptive confidence gating
+      double requiredThreshold = _defaultConfidenceThreshold;
+      if (labelName == "person") {
+        requiredThreshold = _personConfidenceThreshold;
+      } else if (smallTextureProneClasses.contains(labelName)) {
+        requiredThreshold = _smallItemConfidenceThreshold;
+      }
 
       if (maxScore >= requiredThreshold) {
         final cx = raw[0][col];
@@ -520,13 +582,19 @@ class OnDeviceObstacleDetector {
           yMax: yMax.clamp(0.0, 1.0),
         );
 
-        // Reject tiny background noise (area < 0.005)
-        if (cand.area < 0.005) continue;
+        // 1. Minimum & Maximum Area Verification (suppress 1px noise & full-screen hallucination)
+        if (cand.area < 0.0012 || cand.area > 0.96) continue;
 
-        // Geometric verification for Person: Person must have vertical stature (not wide flat horizontal surface)
+        // 2. Aspect Ratio Sanity Check (reject extreme needle-thin edge noise)
+        final double aspectRatio = cand.width / math.max(0.001, cand.height);
+        if (aspectRatio > 14.0 || aspectRatio < 0.07) continue;
+
+        // 3. Class-specific Geometric Sanity Rules
         if (labelName == "person") {
-          if (cand.height < 0.08) continue; // Minimum 8% screen height
-          if (cand.width > 1.6 * cand.height) continue; // Upright human proportion
+          if (cand.height < 0.04) continue; // Must be at least 4% screen height
+          if (cand.width > 2.2 * cand.height) continue; // Reject flat horizontal slabs labeled as people
+        } else if (labelName == "car" || labelName == "bus" || labelName == "truck") {
+          if (cand.height > 3.0 * cand.width) continue; // Reject impossibly thin vertical vehicles
         }
 
         list.add(cand);
@@ -536,10 +604,11 @@ class OnDeviceObstacleDetector {
     return list;
   }
 
-  /// Fast Non-Maximum Suppression (NMS)
+  /// High-Recall Class-Aware Non-Maximum Suppression (NMS)
+  /// Preserves distinct co-located objects (e.g. laptop on table, cup on desk, person on chair)
+  /// while cleanly removing duplicate detections of the same object.
   List<_DetectionCandidate> _applyNms(
     List<_DetectionCandidate> candidates,
-    double threshold,
   ) {
     candidates.sort((a, b) => b.score.compareTo(a.score));
     final List<_DetectionCandidate> selected = [];
@@ -547,14 +616,21 @@ class OnDeviceObstacleDetector {
     for (final cand in candidates) {
       bool shouldSelect = true;
       for (final sel in selected) {
-        if (_computeIoU(cand, sel) > threshold) {
+        final iou = _computeIoU(cand, sel);
+        final isSameClass = cand.label == sel.label;
+
+        // Strict IoU for same class, relaxed IoU for distinct stacked/co-located classes
+        final threshold = isSameClass ? _sameClassIouThreshold : _crossClassIouThreshold;
+
+        if (iou > threshold) {
           shouldSelect = false;
           break;
         }
       }
+
       if (shouldSelect) {
         selected.add(cand);
-        if (selected.length >= 8) break; // Limit to top 8 most prominent obstacles
+        if (selected.length >= 32) break; // Capture up to 32 distinct items in complex scenes
       }
     }
     return selected;
