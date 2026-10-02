@@ -15,6 +15,7 @@ import 'services/currency_recognition_service.dart';
 import 'services/document_framing_guide_service.dart';
 import 'services/document_batch_ocr_reader_service.dart';
 import 'services/conversational_voice_qa_service.dart';
+import 'services/offline_scene_captioning_service.dart';
 import 'models/navigation_destination.dart';
 
 List<CameraDescription> _cameras = [];
@@ -142,6 +143,12 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   final TextEditingController _voiceQuestionInputController =
       TextEditingController();
 
+  // Day 10: Offline Scene Captioning Fallback Engine
+  final OfflineSceneCaptioningService _captioningService =
+      OfflineSceneCaptioningService();
+  StreamSubscription<OfflineSceneCaption>? _captionSubscription;
+  OfflineSceneCaption? _lastOfflineCaption;
+
   int _activeNavTab = 0; // 0: Hazard & Navigation HUD, 1: Daily Living Tools
   final TextEditingController _manualBarcodeInputController =
       TextEditingController();
@@ -241,6 +248,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       if (mounted) {
         setState(() {
           _lastVoiceExchange = exchange;
+        });
+      }
+    });
+
+    // 4e. Listen to Offline Scene Captioning Stream
+    _captionSubscription = _captioningService.captionStream.listen((cap) {
+      if (mounted) {
+        setState(() {
+          _lastOfflineCaption = cap;
         });
       }
     });
@@ -491,11 +507,13 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _framingSubscription?.cancel();
     _readerSubscription?.cancel();
     _voiceQaSubscription?.cancel();
+    _captionSubscription?.cancel();
     _barcodeService.dispose();
     _currencyService.dispose();
     _framingGuideService.dispose();
     _documentReaderService.dispose();
     _voiceQaService.dispose();
+    _captioningService.dispose();
     _speechSubscription?.cancel();
     _destinationInputController.dispose();
     _manualBarcodeInputController.dispose();
@@ -3324,6 +3342,45 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
             ),
             const SizedBox(height: 10),
           ],
+          if (_lastOfflineCaption != null) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0A0E17),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF76FF03).withValues(alpha: 0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        "OFFLINE SPATIAL CAPTION (${_lastOfflineCaption!.environmentEstimate})",
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF76FF03),
+                        ),
+                      ),
+                      Text(
+                        "${_lastOfflineCaption!.latencyMs}ms",
+                        style: const TextStyle(fontSize: 9, color: Colors.white54),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _lastOfflineCaption!.spokenCaption,
+                    style: const TextStyle(fontSize: 12, color: Colors.white70),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
           const Text(
             "Quick Visual Queries (Tap or Voice):",
             style: TextStyle(fontSize: 11, color: Colors.white60),
@@ -3337,6 +3394,22 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               _buildVoiceQueryChip("Find empty chair"),
               _buildVoiceQueryChip("Where is the doorway?"),
               _buildVoiceQueryChip("Is anyone nearby?"),
+              ActionChip(
+                backgroundColor: const Color(0xFF1E293B),
+                side: const BorderSide(color: Color(0xFF76FF03)),
+                avatar: const Icon(Icons.spatial_audio_off, size: 14, color: Color(0xFF76FF03)),
+                label: const Text(
+                  "Offline Scene Caption",
+                  style: TextStyle(fontSize: 11, color: Color(0xFF76FF03)),
+                ),
+                onPressed: () {
+                  _captioningService.generateCaption(
+                    obstacles: _activeObstacles,
+                    phonePitchDeg: _pitchDeg,
+                    phoneRollDeg: _rollDeg,
+                  );
+                },
+              ),
             ],
           ),
         ],

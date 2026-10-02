@@ -1,0 +1,150 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:orbisnav/controllers/audio_mutex_controller.dart';
+import 'package:orbisnav/services/offline_scene_captioning_service.dart';
+import 'package:orbisnav/services/online_obstacle_detector.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('Day 8 & 9: Audio Mutex Preemption & Auto-Resume Context Stack Tests', () {
+    late AudioMutexController audioMutex;
+
+    setUp(() {
+      audioMutex = AudioMutexController();
+    });
+
+    tearDown(() {
+      audioMutex.hardStop();
+    });
+
+    test('Level 0 Critical Hazard flushes lower priority requests', () async {
+      // 1. Send Level 3 Context dialogue
+      audioMutex.speak(
+        text: 'This is a long description of the living room with furniture.',
+        priority: AudioPriority.level3Context,
+        haptic: false,
+      );
+
+      expect(audioMutex.currentActivePriority, equals(AudioPriority.level3Context));
+
+      // 2. Immediate Level 0 Critical Hazard strikes!
+      audioMutex.speak(
+        text: 'Warning! Obstacle 1 meter ahead.',
+        priority: AudioPriority.level0Critical,
+        haptic: true,
+        force: true,
+      );
+
+      // Mutex must immediately switch active priority to Level 0 Critical
+      expect(audioMutex.currentActivePriority, equals(AudioPriority.level0Critical));
+    });
+
+    test('Notifies hazard cleared and enforces 1.5s debounce before resumption', () async {
+      // Suspend dialogue with hazard
+      audioMutex.speak(
+        text: 'Detailed explanation of outdoor garden path.',
+        priority: AudioPriority.level3Context,
+        haptic: false,
+      );
+
+      audioMutex.speak(
+        text: 'Step down ahead.',
+        priority: AudioPriority.level0Critical,
+        haptic: true,
+        force: true,
+      );
+
+      // Trigger hazard cleared event
+      audioMutex.notifyHazardCleared();
+      expect(audioMutex.lastHazardClearedTime, isNotNull);
+
+      // Wait 1600ms (exceeding 1.5s debounce)
+      await Future.delayed(const Duration(milliseconds: 1600));
+
+      // Context resumption was triggered
+      expect(audioMutex.lastHazardClearedTime, isNotNull);
+    });
+  });
+
+  group('Day 10: Offline Scene Captioning & Corridor Guidance Tests', () {
+    late OfflineSceneCaptioningService captionService;
+    late AudioMutexController audioMutex;
+
+    setUp(() {
+      audioMutex = AudioMutexController();
+      captionService = OfflineSceneCaptioningService(audioMutex: audioMutex);
+    });
+
+    tearDown(() {
+      captionService.dispose();
+    });
+
+    test('Synthesizes empty scene with forward trajectory recommendation', () {
+      final caption = captionService.generateCaption(obstacles: []);
+
+      expect(caption.environmentEstimate, equals('Open Space'));
+      expect(caption.foregroundHazards, isEmpty);
+      expect(caption.openCorridorSuggestion, contains("12 o'clock"));
+      expect(caption.spokenCaption, contains('Path ahead is clear'));
+    });
+
+    test('Partitions foreground hazards (<=1.5m) and midground objects accurately', () {
+      final obstacles = [
+        DetectedObstacle(
+          label: 'Chair',
+          confidence: 0.95,
+          xMin: 0.4,
+          yMin: 0.4,
+          xMax: 0.6,
+          yMax: 0.8,
+          distanceMeters: 1.1, // Foreground
+          ttcSeconds: 1.2,
+          priority: AudioPriority.level0Critical,
+          clockPosition: "12 o'clock",
+        ),
+        DetectedObstacle(
+          label: 'Table',
+          confidence: 0.88,
+          xMin: 0.7,
+          yMin: 0.3,
+          xMax: 0.9,
+          yMax: 0.7,
+          distanceMeters: 2.5, // Midground
+          ttcSeconds: 3.0,
+          priority: AudioPriority.level2Navigation,
+          clockPosition: "2 o'clock",
+        ),
+      ];
+
+      final caption = captionService.generateCaption(obstacles: obstacles);
+
+      expect(caption.environmentEstimate, contains('Indoor'));
+      expect(caption.foregroundHazards.length, equals(1));
+      expect(caption.foregroundHazards.first, contains('Chair'));
+      expect(caption.midgroundObjects.length, equals(1));
+      expect(caption.midgroundObjects.first, contains('Table'));
+      expect(caption.openCorridorSuggestion, contains("10 o'clock")); // 12 and 2 are blocked, so 10 is recommended
+    });
+
+    test('Infers outdoor street traffic environment correctly', () {
+      final obstacles = [
+        DetectedObstacle(
+          label: 'Car',
+          confidence: 0.91,
+          xMin: 0.1,
+          yMin: 0.2,
+          xMax: 0.5,
+          yMax: 0.8,
+          distanceMeters: 4.0, // Background
+          ttcSeconds: 5.0,
+          priority: AudioPriority.level2Navigation,
+          clockPosition: "10 o'clock",
+        ),
+      ];
+
+      final caption = captionService.generateCaption(obstacles: obstacles);
+      expect(caption.environmentEstimate, contains('Outdoor Street'));
+      expect(caption.backgroundLandmarks.length, equals(1));
+    });
+  });
+}
