@@ -12,6 +12,8 @@ import 'services/cloud_ai_vision_service.dart';
 import 'services/nameboard_navigation_service.dart';
 import 'services/barcode_product_service.dart';
 import 'services/currency_recognition_service.dart';
+import 'services/document_framing_guide_service.dart';
+import 'services/document_batch_ocr_reader_service.dart';
 import 'models/navigation_destination.dart';
 
 List<CameraDescription> _cameras = [];
@@ -120,6 +122,17 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   StreamSubscription<CurrencyScanResult>? _currencySubscription;
   ScannedProductInfo? _lastScannedProduct;
   CurrencyScanResult? _lastCurrencyResult;
+
+  // Day 3 & Day 4: Document Framing Guidance & Batch OCR Reader
+  final DocumentFramingGuideService _framingGuideService =
+      DocumentFramingGuideService();
+  final DocumentBatchOcrReaderService _documentReaderService =
+      DocumentBatchOcrReaderService();
+  StreamSubscription<FramingAnalysisResult>? _framingSubscription;
+  StreamSubscription<DocumentReadingSession>? _readerSubscription;
+  FramingAnalysisResult? _lastFramingResult;
+  DocumentReadingSession _currentReadingSession = DocumentReadingSession.empty();
+
   int _activeNavTab = 0; // 0: Hazard & Navigation HUD, 1: Daily Living Tools
   final TextEditingController _manualBarcodeInputController =
       TextEditingController();
@@ -193,6 +206,23 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       if (mounted) {
         setState(() {
           _lastCurrencyResult = curr;
+        });
+      }
+    });
+
+    // 4c. Listen to Day 3 & 4 Document Framing & Reader Streams
+    _framingSubscription = _framingGuideService.guidanceStream.listen((res) {
+      if (mounted) {
+        setState(() {
+          _lastFramingResult = res;
+        });
+      }
+    });
+
+    _readerSubscription = _documentReaderService.sessionStream.listen((session) {
+      if (mounted) {
+        setState(() {
+          _currentReadingSession = session;
         });
       }
     });
@@ -440,8 +470,12 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _navSubscription?.cancel();
     _productSubscription?.cancel();
     _currencySubscription?.cancel();
+    _framingSubscription?.cancel();
+    _readerSubscription?.cancel();
     _barcodeService.dispose();
     _currencyService.dispose();
+    _framingGuideService.dispose();
+    _documentReaderService.dispose();
     _speechSubscription?.cancel();
     _destinationInputController.dispose();
     _manualBarcodeInputController.dispose();
@@ -2826,9 +2860,334 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               ],
             ),
           ),
+          const SizedBox(height: 14),
+
+          // 3. Document Audio Framing Guide & Auto-Shutter Scanner (Day 3)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.document_scanner_outlined, size: 16, color: Color(0xFF00E5FF)),
+                        SizedBox(width: 6),
+                        Text(
+                          "Document Framing & Auto-Capture",
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        "Auto-Shutter",
+                        style: TextStyle(fontSize: 10, color: Color(0xFF00E5FF)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (_lastFramingResult != null) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0A0E17),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: _lastFramingResult!.readyToCapture
+                            ? const Color(0xFF76FF03)
+                            : const Color(0xFF00E5FF),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              _lastFramingResult!.readyToCapture
+                                  ? Icons.check_circle
+                                  : Icons.center_focus_strong,
+                              size: 16,
+                              color: _lastFramingResult!.readyToCapture
+                                  ? const Color(0xFF76FF03)
+                                  : const Color(0xFF00E5FF),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                _lastFramingResult!.spokenGuidance,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: _lastFramingResult!.readyToCapture
+                                      ? const Color(0xFF76FF03)
+                                      : Colors.white,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (_lastFramingResult!.stabilityProgress > 0.0) ...[
+                          const SizedBox(height: 6),
+                          LinearProgressIndicator(
+                            value: _lastFramingResult!.stabilityProgress,
+                            backgroundColor: Colors.white10,
+                            valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF76FF03)),
+                            minHeight: 4,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        // Simulate too close
+                        _framingGuideService.evaluateFrame(
+                          corners: const DocumentCorners(
+                            topLeftX: 0.01,
+                            topLeftY: 0.01,
+                            topRightX: 0.99,
+                            topRightY: 0.01,
+                            bottomLeftX: 0.01,
+                            bottomLeftY: 0.99,
+                            bottomRightX: 0.99,
+                            bottomRightY: 0.99,
+                            coverageRatio: 0.95,
+                          ),
+                          phonePitchDeg: _pitchDeg,
+                          phoneRollDeg: _rollDeg,
+                        );
+                      },
+                      icon: const Icon(Icons.zoom_out, size: 14),
+                      label: const Text("Too Close Demo", style: TextStyle(fontSize: 11)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0A0E17),
+                        foregroundColor: Colors.white70,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        // Simulate perfect alignment and auto-capture
+                        _framingGuideService.evaluateFrame(
+                          corners: const DocumentCorners(
+                            topLeftX: 0.15,
+                            topLeftY: 0.15,
+                            topRightX: 0.85,
+                            topRightY: 0.15,
+                            bottomLeftX: 0.15,
+                            bottomLeftY: 0.85,
+                            bottomRightX: 0.85,
+                            bottomRightY: 0.85,
+                            coverageRatio: 0.65,
+                          ),
+                          phonePitchDeg: 0.0,
+                          phoneRollDeg: 0.0,
+                        );
+                      },
+                      icon: const Icon(Icons.camera_alt_outlined, size: 14),
+                      label: const Text("Align & Capture", style: TextStyle(fontSize: 11)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF00E5FF),
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          // 4. Batch OCR & Continuous Natural Text Reader (Day 4)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.menu_book, size: 16, color: Color(0xFF76FF03)),
+                        SizedBox(width: 6),
+                        Text(
+                          "Continuous OCR & Batch Reader",
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF76FF03).withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        "Speed ${_currentReadingSession.playbackSpeed}x",
+                        style: const TextStyle(fontSize: 10, color: Color(0xFF76FF03)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                if (_currentReadingSession.hasContent) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0A0E17),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: _currentReadingSession.isPlaying
+                            ? const Color(0xFF76FF03)
+                            : Colors.white24,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              "Paragraph ${_currentReadingSession.currentParagraphIndex + 1} of ${_currentReadingSession.totalParagraphs} (Page ${_currentReadingSession.currentParagraph?.pageNumber ?? 1})",
+                              style: const TextStyle(fontSize: 10, color: Colors.white54),
+                            ),
+                            Text(
+                              _currentReadingSession.status.name.toUpperCase(),
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: _currentReadingSession.isPlaying
+                                    ? const Color(0xFF76FF03)
+                                    : Colors.orangeAccent,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          _currentReadingSession.currentParagraph?.text ?? '',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      IconButton(
+                        onPressed: _documentReaderService.previousParagraph,
+                        icon: const Icon(Icons.skip_previous, color: Colors.white),
+                        tooltip: "Previous Paragraph",
+                      ),
+                      IconButton(
+                        onPressed: () {
+                          if (_currentReadingSession.isPlaying) {
+                            _documentReaderService.pauseReading();
+                          } else {
+                            _documentReaderService.resumeReading();
+                          }
+                        },
+                        icon: Icon(
+                          _currentReadingSession.isPlaying
+                              ? Icons.pause_circle_filled
+                              : Icons.play_circle_filled,
+                          size: 32,
+                          color: const Color(0xFF76FF03),
+                        ),
+                        tooltip: _currentReadingSession.isPlaying ? "Pause" : "Play",
+                      ),
+                      IconButton(
+                        onPressed: _documentReaderService.nextParagraph,
+                        icon: const Icon(Icons.skip_next, color: Colors.white),
+                        tooltip: "Next Paragraph",
+                      ),
+                      IconButton(
+                        onPressed: () {
+                          final speeds = [0.8, 1.0, 1.25, 1.5, 2.0];
+                          final currIdx = speeds.indexOf(_currentReadingSession.playbackSpeed);
+                          final nextSpeed = speeds[(currIdx + 1) % speeds.length];
+                          _documentReaderService.setPlaybackSpeed(nextSpeed);
+                        },
+                        icon: const Icon(Icons.speed, color: Color(0xFF00E5FF)),
+                        tooltip: "Change Speed",
+                      ),
+                    ],
+                  ),
+                ] else ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            const samplePrescription =
+                                "PRESCRIPTION DETAILS:\n\nTake 1 tablet of Amoxicillin 500mg by mouth twice daily with meals for 7 days.\n\nWARNING:\nFinish full course of medication even if symptoms subside.";
+                            _documentReaderService.addPage(samplePrescription);
+                            _documentReaderService.startReading();
+                          },
+                          icon: const Icon(Icons.receipt_long, size: 16),
+                          label: const Text("Load Sample Prescription", style: TextStyle(fontSize: 11)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF00E5FF),
+                            foregroundColor: Colors.black,
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 }
+
 
