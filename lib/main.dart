@@ -16,6 +16,10 @@ import 'services/document_framing_guide_service.dart';
 import 'services/document_batch_ocr_reader_service.dart';
 import 'services/conversational_voice_qa_service.dart';
 import 'services/offline_scene_captioning_service.dart';
+import 'services/pedestrian_navigation_service.dart';
+import 'services/indoor_self_mapping_service.dart';
+import 'services/spatial_binaural_earcon_service.dart';
+import 'services/trusted_angels_call_service.dart';
 import 'models/navigation_destination.dart';
 
 List<CameraDescription> _cameras = [];
@@ -149,7 +153,35 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   StreamSubscription<OfflineSceneCaption>? _captionSubscription;
   OfflineSceneCaption? _lastOfflineCaption;
 
-  int _activeNavTab = 0; // 0: Hazard & Navigation HUD, 1: Daily Living Tools
+  // Day 11 & Day 12: Pedestrian Turn-by-Turn Navigation & Crosswalk / Traffic Light Vision
+  final PedestrianNavigationService _pedestrianNavService =
+      PedestrianNavigationService();
+  StreamSubscription<PedestrianNavigationState>? _pedestrianNavSubscription;
+  PedestrianNavigationState? _lastPedestrianState;
+
+  // Day 13, 14 & 15: Indoor Self-Mapping (A* Graph, Levenshtein Plaque Snapping & PDR)
+  final IndoorSelfMappingService _indoorMappingService =
+      IndoorSelfMappingService();
+  StreamSubscription<IndoorNavigationState>? _indoorMappingSubscription;
+  IndoorNavigationState? _lastIndoorState;
+  final TextEditingController _indoorNodeNameController =
+      TextEditingController();
+  final TextEditingController _indoorOcrInputController =
+      TextEditingController();
+
+  // Day 16: Spatial Binaural 3D Elevation Earcon Service (Head-Level, Torso, Drop-Off)
+  final SpatialBinauralEarconService _earconService =
+      SpatialBinauralEarconService();
+  StreamSubscription<SpatialEarconCue>? _earconSubscription;
+  SpatialEarconCue? _lastEarconCue;
+
+  // Day 17: 1-Tap Trusted Angels P2P Caregiver Video Calling
+  final TrustedAngelsCallService _angelsCallService =
+      TrustedAngelsCallService();
+  StreamSubscription<TrustedAngelCallSession>? _angelsCallSubscription;
+  TrustedAngelCallSession _lastCallState = TrustedAngelCallSession.idle();
+
+  int _activeNavTab = 0; // 0: Hazard HUD, 1: Pedestrian & Indoor Nav, 2: Daily Living & Caregiver
   final TextEditingController _manualBarcodeInputController =
       TextEditingController();
 
@@ -188,6 +220,14 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           _primaryHazard = result.highestHazard;
           _optimalPath = result.optimalPath;
         });
+        // Real-Time 3D Binaural Earcon Hazard Spatializer
+        if (result.highestHazard != null) {
+          _earconService.dispatchSpatialEarcon(
+            obstacle: result.highestHazard!,
+            estimatedElevationMeters:
+                result.highestHazard!.isHazard ? 1.6 : 1.0,
+          );
+        }
       }
     });
 
@@ -257,6 +297,41 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       if (mounted) {
         setState(() {
           _lastOfflineCaption = cap;
+        });
+      }
+    });
+
+    // 4f. Listen to Days 11-17 Navigation, Indoor Mapping, Earcon & Angels Streams
+    _pedestrianNavSubscription =
+        _pedestrianNavService.navStream.listen((state) {
+      if (mounted) {
+        setState(() {
+          _lastPedestrianState = state;
+        });
+      }
+    });
+
+    _indoorMappingSubscription =
+        _indoorMappingService.stateStream.listen((state) {
+      if (mounted) {
+        setState(() {
+          _lastIndoorState = state;
+        });
+      }
+    });
+
+    _earconSubscription = _earconService.cueStream.listen((cue) {
+      if (mounted) {
+        setState(() {
+          _lastEarconCue = cue;
+        });
+      }
+    });
+
+    _angelsCallSubscription = _angelsCallService.sessionStream.listen((call) {
+      if (mounted) {
+        setState(() {
+          _lastCallState = call;
         });
       }
     });
@@ -508,16 +583,26 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _readerSubscription?.cancel();
     _voiceQaSubscription?.cancel();
     _captionSubscription?.cancel();
+    _pedestrianNavSubscription?.cancel();
+    _indoorMappingSubscription?.cancel();
+    _earconSubscription?.cancel();
+    _angelsCallSubscription?.cancel();
     _barcodeService.dispose();
     _currencyService.dispose();
     _framingGuideService.dispose();
     _documentReaderService.dispose();
     _voiceQaService.dispose();
     _captioningService.dispose();
+    _pedestrianNavService.dispose();
+    _indoorMappingService.dispose();
+    _earconService.dispose();
+    _angelsCallService.dispose();
     _speechSubscription?.cancel();
     _destinationInputController.dispose();
     _manualBarcodeInputController.dispose();
     _voiceQuestionInputController.dispose();
+    _indoorNodeNameController.dispose();
+    _indoorOcrInputController.dispose();
     _navService.stopNavigation();
     _cameraController?.dispose();
     _audioMutex.dispose();
@@ -609,19 +694,29 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           _triggerQuickVoiceQA("What is in front of me?");
         },
         onHorizontalDragEnd: (details) {
-          // Day 5 Gesture: Horizontal swipe toggles between Safety HUD and Daily Living Tools
+          // Day 5 Gesture: Horizontal swipe cycles between 3 primary tabs
           if (details.primaryVelocity != null) {
             if (details.primaryVelocity! < -200) {
-              setState(() => _activeNavTab = 1);
+              setState(() => _activeNavTab = (_activeNavTab + 1) % 3);
+              final tabNames = [
+                "Safety Hazard HUD",
+                "Pedestrian and Indoor Navigation",
+                "Daily Living and Caregivers"
+              ];
               _audioMutex.speak(
-                text: "Daily Living Tools Mode.",
+                text: "Switched to ${tabNames[_activeNavTab]} Mode.",
                 priority: AudioPriority.level2Navigation,
                 haptic: true,
               );
             } else if (details.primaryVelocity! > 200) {
-              setState(() => _activeNavTab = 0);
+              setState(() => _activeNavTab = (_activeNavTab - 1 + 3) % 3);
+              final tabNames = [
+                "Safety Hazard HUD",
+                "Pedestrian and Indoor Navigation",
+                "Daily Living and Caregivers"
+              ];
               _audioMutex.speak(
-                text: "Safety Navigation Mode.",
+                text: "Switched to ${tabNames[_activeNavTab]} Mode.",
                 priority: AudioPriority.level2Navigation,
                 haptic: true,
               );
@@ -633,7 +728,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Mode Switcher Tab Bar
+              // Mode Switcher Tab Bar (3 Primary Modes)
               _buildModeSwitcherTabBar(),
               const SizedBox(height: 12),
 
@@ -642,39 +737,45 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               const SizedBox(height: 14),
 
               if (_activeNavTab == 0) ...[
-                // 2. Portrait Camera Viewfinder with Live Real-World Bounding Boxes & Motion Badges
+                // Tab 0: Safety & Hazard HUD
                 _buildPortraitCameraViewfinder(hasCriticalHazard),
                 const SizedBox(height: 14),
 
-                // 2b. Conversational Multimodal Voice Q&A Assistant (Day 6 & 7)
                 _buildVoiceQACard(),
                 const SizedBox(height: 14),
 
-                // 3. Real-Time Optimal Path Navigation Corridor Guidance
                 _buildOptimalPathGuidanceCard(hasCriticalHazard),
                 const SizedBox(height: 14),
 
-                // 4. Dedicated Motion Detection & Kinematics Radar
+                _buildBinauralEarconStatusCard(),
+                const SizedBox(height: 14),
+
                 _buildMotionKinematicsCard(),
                 const SizedBox(height: 14),
 
-                // 5. On-Device Obstacle Detection Status & Hazard List
                 _buildObstacleDetectionCard(hasCriticalHazard),
                 const SizedBox(height: 14),
 
-                // 5b. Multimodal AI Situation & Scene Analyzer
                 _buildSceneComprehensionCard(),
                 const SizedBox(height: 14),
+              ] else if (_activeNavTab == 1) ...[
+                // Tab 1: Pedestrian Navigation & Indoor Self-Mapping
+                _buildPedestrianNavCard(),
+                const SizedBox(height: 14),
 
-                // 6. GPS Nearby Destinations & POIs (4km Radius Explorer)
+                _buildIndoorMappingCard(),
+                const SizedBox(height: 14),
+
                 _build4kmNearbyDestinationsCard(),
                 const SizedBox(height: 14),
 
-                // 7. 12-Hour Spatial Navigation Radar & PDR Tracking
                 _buildNavigationRadar(),
                 const SizedBox(height: 14),
               ] else ...[
-                // Daily Living Tools Tab (Barcode Scanner, Currency, Framing Guide, Batch Reader)
+                // Tab 2: Daily Living Tools & Trusted Angels Caregivers
+                _buildTrustedAngelsCard(),
+                const SizedBox(height: 14),
+
                 _buildDailyLivingToolsCard(),
                 const SizedBox(height: 14),
               ],
@@ -2495,104 +2596,898 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       ),
       child: Row(
         children: [
+          // Tab 0: Safety HUD
           Expanded(
-            child: GestureDetector(
-              onTap: () {
-                setState(() => _activeNavTab = 0);
-                _audioMutex.speak(
-                  text: "Switched to Safety Navigation and Hazard HUD.",
-                  priority: AudioPriority.level2Navigation,
-                  haptic: true,
-                );
-              },
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                  color: _activeNavTab == 0
-                      ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                key: const Key('mode_tab_safety'),
+                borderRadius: BorderRadius.circular(8),
+                onTap: () {
+                  setState(() => _activeNavTab = 0);
+                  _audioMutex.speak(
+                    text: "Switched to Safety Hazard HUD.",
+                    priority: AudioPriority.level2Navigation,
+                    haptic: true,
+                  );
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  decoration: BoxDecoration(
                     color: _activeNavTab == 0
-                        ? const Color(0xFF00E5FF)
+                        ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
                         : Colors.transparent,
-                  ),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.navigation,
-                      size: 16,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
                       color: _activeNavTab == 0
                           ? const Color(0xFF00E5FF)
-                          : Colors.white60,
+                          : Colors.transparent,
                     ),
-                    const SizedBox(width: 6),
-                    Text(
-                      "Safety Nav HUD",
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.shield_outlined,
+                        size: 15,
                         color: _activeNavTab == 0
                             ? const Color(0xFF00E5FF)
                             : Colors.white60,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 4),
+                      Text(
+                        "Safety HUD",
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: _activeNavTab == 0
+                              ? const Color(0xFF00E5FF)
+                              : Colors.white60,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
           const SizedBox(width: 4),
+          // Tab 1: Pedestrian & Indoor Nav
           Expanded(
-            child: GestureDetector(
-              onTap: () {
-                setState(() => _activeNavTab = 1);
-                _audioMutex.speak(
-                  text: "Switched to Daily Living Tools. Barcode and Currency scanner ready.",
-                  priority: AudioPriority.level2Navigation,
-                  haptic: true,
-                );
-              },
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                  color: _activeNavTab == 1
-                      ? const Color(0xFF76FF03).withValues(alpha: 0.2)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                key: const Key('mode_tab_navigation'),
+                borderRadius: BorderRadius.circular(8),
+                onTap: () {
+                  setState(() => _activeNavTab = 1);
+                  _audioMutex.speak(
+                    text: "Switched to Pedestrian and Indoor Navigation.",
+                    priority: AudioPriority.level2Navigation,
+                    haptic: true,
+                  );
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  decoration: BoxDecoration(
                     color: _activeNavTab == 1
-                        ? const Color(0xFF76FF03)
+                        ? const Color(0xFFFFD600).withValues(alpha: 0.2)
                         : Colors.transparent,
-                  ),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.shopping_bag_outlined,
-                      size: 16,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
                       color: _activeNavTab == 1
-                          ? const Color(0xFF76FF03)
-                          : Colors.white60,
+                          ? const Color(0xFFFFD600)
+                          : Colors.transparent,
                     ),
-                    const SizedBox(width: 6),
-                    Text(
-                      "Daily Living Tools",
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.directions_walk,
+                        size: 15,
                         color: _activeNavTab == 1
-                            ? const Color(0xFF76FF03)
+                            ? const Color(0xFFFFD600)
                             : Colors.white60,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 4),
+                      Text(
+                        "Navigation",
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: _activeNavTab == 1
+                              ? const Color(0xFFFFD600)
+                              : Colors.white60,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
+          ),
+          const SizedBox(width: 4),
+          // Tab 2: Living & Angels
+          Expanded(
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                key: const Key('mode_tab_living'),
+                borderRadius: BorderRadius.circular(8),
+                onTap: () {
+                  setState(() => _activeNavTab = 2);
+                  _audioMutex.speak(
+                    text: "Switched to Daily Living Tools and Trusted Angels.",
+                    priority: AudioPriority.level2Navigation,
+                    haptic: true,
+                  );
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  decoration: BoxDecoration(
+                    color: _activeNavTab == 2
+                        ? const Color(0xFF76FF03).withValues(alpha: 0.2)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: _activeNavTab == 2
+                          ? const Color(0xFF76FF03)
+                          : Colors.transparent,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.volunteer_activism_outlined,
+                        size: 15,
+                        color: _activeNavTab == 2
+                            ? const Color(0xFF76FF03)
+                            : Colors.white60,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        "Living & Care",
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: _activeNavTab == 2
+                              ? const Color(0xFF76FF03)
+                              : Colors.white60,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBinauralEarconStatusCard() {
+    final lastCue = _lastEarconCue ?? _earconService.lastCue;
+    final lastElevation = lastCue?.zone ?? HazardElevationZone.torsoLevel;
+    final lastAzimuth = lastCue?.panStereo ?? 0.0;
+
+    Color zoneColor = const Color(0xFF00E5FF);
+    String zoneTitle = "Torso Hazard (880 Hz Steady Tone)";
+    if (lastElevation == HazardElevationZone.headLevel) {
+      zoneColor = const Color(0xFFFF1744);
+      zoneTitle = "Head-Level Overhang (2500 Hz Triple Pulse)";
+    } else if (lastElevation == HazardElevationZone.dropOff) {
+      zoneColor = const Color(0xFFFF9100);
+      zoneTitle = "Drop-Off / Curb / Stair (220 Hz Low Sweep)";
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: zoneColor.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.headphones, size: 18, color: zoneColor),
+                  const SizedBox(width: 8),
+                  const Text(
+                    "3D SPATIAL BINAURAL EARCONS",
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.1,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: zoneColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  "Bone Conduction Ready",
+                  style: TextStyle(
+                      fontSize: 10,
+                      color: zoneColor,
+                      fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "Zone: $zoneTitle • Azimuth: ${(lastAzimuth * 100).toInt()}% (${lastAzimuth < 0 ? 'Left' : (lastAzimuth > 0 ? 'Right' : 'Center')})",
+            style: const TextStyle(fontSize: 11, color: Colors.white70),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              ElevatedButton.icon(
+                onPressed: () {
+                  _earconService.dispatchSpatialEarcon(
+                    obstacle: DetectedObstacle(
+                      label: "Low Tree Branch",
+                      confidence: 0.92,
+                      xMin: 0.1,
+                      yMin: 0.05,
+                      xMax: 0.4,
+                      yMax: 0.35,
+                      distanceMeters: 1.4,
+                      ttcSeconds: 1.5,
+                      priority: AudioPriority.level1Safety,
+                      clockPosition: "11 o'clock",
+                    ),
+                    estimatedElevationMeters: 1.8,
+                  );
+                },
+                icon: const Icon(Icons.arrow_upward, size: 13),
+                label: const Text("Test Head-Level (Left)",
+                    style: TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFFFF1744),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  _earconService.dispatchSpatialEarcon(
+                    obstacle: DetectedObstacle(
+                      label: "Downward Curb Step",
+                      confidence: 0.95,
+                      xMin: 0.6,
+                      yMin: 0.7,
+                      xMax: 0.9,
+                      yMax: 0.95,
+                      distanceMeters: 1.1,
+                      ttcSeconds: 1.2,
+                      priority: AudioPriority.level1Safety,
+                      clockPosition: "2 o'clock",
+                    ),
+                    estimatedElevationMeters: 0.2,
+                  );
+                },
+                icon: const Icon(Icons.arrow_downward, size: 13),
+                label: const Text("Test Drop-Off (Right)",
+                    style: TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFFFF9100),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  _earconService.dispatchSpatialEarcon(
+                    obstacle: DetectedObstacle(
+                      label: "Bollard Post",
+                      confidence: 0.91,
+                      xMin: 0.4,
+                      yMin: 0.3,
+                      xMax: 0.6,
+                      yMax: 0.7,
+                      distanceMeters: 2.2,
+                      ttcSeconds: 2.0,
+                      priority: AudioPriority.level1Safety,
+                      clockPosition: "12 o'clock",
+                    ),
+                    estimatedElevationMeters: 1.0,
+                  );
+                },
+                icon: const Icon(Icons.center_focus_strong, size: 13),
+                label: const Text("Test Torso (Center)",
+                    style: TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFF00E5FF),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPedestrianNavCard() {
+    final nav = _lastPedestrianState ?? _pedestrianNavService.currentState;
+    final crosswalk = nav.crosswalkStatus;
+    final hasActiveRoute = nav.isNavigating;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border:
+            Border.all(color: const Color(0xFFFFD600).withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.directions_walk,
+                      color: Color(0xFFFFD600), size: 18),
+                  SizedBox(width: 8),
+                  Text(
+                    "PEDESTRIAN & CROSSWALK VISION",
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.1,
+                      color: Color(0xFFFFD600),
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFD600).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  hasActiveRoute ? "ACTIVE ROUTE" : "EXPLORATION",
+                  style: const TextStyle(
+                      fontSize: 10,
+                      color: Color(0xFFFFD600),
+                      fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // Crosswalk & Signal Box
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A0E17),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: crosswalk.crosswalkDetected &&
+                        crosswalk.lightState == TrafficLightState.walkSignal
+                    ? const Color(0xFF76FF03)
+                    : (crosswalk.crosswalkDetected
+                        ? const Color(0xFFFF1744)
+                        : Colors.white12),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  crosswalk.crosswalkDetected &&
+                          crosswalk.lightState == TrafficLightState.walkSignal
+                      ? Icons.directions_walk
+                      : (crosswalk.crosswalkDetected
+                          ? Icons.pan_tool
+                          : Icons.traffic),
+                  color: crosswalk.crosswalkDetected &&
+                          crosswalk.lightState == TrafficLightState.walkSignal
+                      ? const Color(0xFF76FF03)
+                      : (crosswalk.crosswalkDetected
+                          ? const Color(0xFFFF1744)
+                          : Colors.white38),
+                  size: 28,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        crosswalk.crosswalkDetected
+                            ? crosswalk.spokenAlert
+                            : "Scanning for zebra crosswalks & traffic signals...",
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: crosswalk.crosswalkDetected &&
+                                  crosswalk.lightState ==
+                                      TrafficLightState.walkSignal
+                              ? const Color(0xFF76FF03)
+                              : Colors.white,
+                        ),
+                      ),
+                      if (crosswalk.countdownSeconds > 0)
+                        Text(
+                          "Countdown: ${crosswalk.countdownSeconds}s remaining",
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.orangeAccent),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (hasActiveRoute) ...[
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0A0E17),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFF00E5FF)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        "Destination: ${nav.destinationName}",
+                        style: const TextStyle(
+                            fontSize: 10, color: Color(0xFF00E5FF)),
+                      ),
+                      Text(
+                        "${nav.remainingDistanceMeters.toStringAsFixed(0)}m remaining",
+                        style: const TextStyle(
+                            fontSize: 10, color: Colors.white54),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    nav.currentTurnInstruction,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              ElevatedButton.icon(
+                onPressed: () {
+                  _pedestrianNavService.processCrosswalkVision(
+                    zebraCrossingDetected: true,
+                    distanceMeters: 4.0,
+                    lightState: TrafficLightState.walkSignal,
+                    countdownSeconds: 12,
+                    confidence: 0.95,
+                  );
+                },
+                icon: const Icon(Icons.check_circle, size: 14),
+                label: const Text("Simulate Walk Signal",
+                    style: TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFF76FF03),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  _pedestrianNavService.processCrosswalkVision(
+                    zebraCrossingDetected: true,
+                    distanceMeters: 4.0,
+                    lightState: TrafficLightState.dontWalkSignal,
+                    countdownSeconds: 0,
+                    confidence: 0.95,
+                  );
+                },
+                icon: const Icon(Icons.do_not_disturb_on, size: 14),
+                label: const Text("Simulate Don't Walk",
+                    style: TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFFFF1744),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  if (hasActiveRoute) {
+                    _pedestrianNavService.stopNavigation();
+                  } else {
+                    _pedestrianNavService.startPedestrianRoute(
+                      destinationName: "Downtown Metro Station",
+                      waypoints: const [
+                        PedestrianWaypoint(
+                          latitude: 37.7749,
+                          longitude: -122.4194,
+                          instruction:
+                              "Walk straight for 80 meters towards crosswalk.",
+                          relativeClockDirection: 12,
+                          distanceMeters: 80.0,
+                        ),
+                        PedestrianWaypoint(
+                          latitude: 37.7752,
+                          longitude: -122.4190,
+                          instruction:
+                              "Cross street when signal indicates WALK.",
+                          relativeClockDirection: 12,
+                          distanceMeters: 20.0,
+                          isCrosswalk: true,
+                        ),
+                        PedestrianWaypoint(
+                          latitude: 37.7755,
+                          longitude: -122.4185,
+                          instruction:
+                              "Turn slight left towards 10 o'clock to enter station.",
+                          relativeClockDirection: 10,
+                          distanceMeters: 140.0,
+                        ),
+                      ],
+                    );
+                  }
+                },
+                icon: Icon(hasActiveRoute ? Icons.stop : Icons.play_arrow,
+                    size: 14),
+                label: Text(
+                    hasActiveRoute ? "Stop Route" : "Start Metro Route Demo",
+                    style: const TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFFD600),
+                  foregroundColor: Colors.black,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIndoorMappingCard() {
+    final indoor = _lastIndoorState ?? _indoorMappingService.currentState;
+    final isRecording = indoor.isRecordingMap;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border:
+            Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.meeting_room_outlined,
+                      color: Color(0xFF00E5FF), size: 18),
+                  SizedBox(width: 8),
+                  Text(
+                    "INDOOR SELF-MAPPING & A* ROUTING",
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.1,
+                      color: Color(0xFF00E5FF),
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isRecording
+                      ? const Color(0xFFFF1744).withValues(alpha: 0.2)
+                      : const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  isRecording ? "RECORDING WALK" : "MAPPING READY",
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: isRecording
+                        ? const Color(0xFFFF1744)
+                        : const Color(0xFF00E5FF),
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A0E17),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Venue: ${indoor.currentVenue} (Pos: ${indoor.currentX.toStringAsFixed(1)}m, ${indoor.currentY.toStringAsFixed(1)}m)",
+                  style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white70),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  indoor.currentInstruction,
+                  style: const TextStyle(fontSize: 12, color: Colors.white),
+                ),
+                if (indoor.lastSnappedLandmark != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    "📍 Snapped Landmark: ${indoor.lastSnappedLandmark!}",
+                    style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF76FF03),
+                        fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              ElevatedButton.icon(
+                onPressed: () {
+                  if (isRecording) {
+                    _indoorMappingService.stopRecordingAndExportMap();
+                  } else {
+                    _indoorMappingService
+                        .startRecordingMap("Medical Center Floor 2");
+                  }
+                },
+                icon: Icon(
+                    isRecording ? Icons.stop : Icons.fiber_manual_record,
+                    size: 14),
+                label: Text(isRecording ? "Stop Trace" : "Record & Walk",
+                    style: const TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isRecording
+                      ? const Color(0xFFFF1744)
+                      : const Color(0xFF00E5FF),
+                  foregroundColor: Colors.black,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  if (isRecording) {
+                    _indoorMappingService.addLandmarkPlaqueDuringRecording(
+                      plaqueName: "Room 302 - Clinic",
+                      detectedOcrText: "ROOM 302 DR SMITH",
+                    );
+                  } else {
+                    _indoorMappingService
+                        .startRecordingMap("Medical Center Floor 2");
+                    _indoorMappingService.addLandmarkPlaqueDuringRecording(
+                      plaqueName: "Room 302 - Clinic",
+                      detectedOcrText: "ROOM 302 DR SMITH",
+                    );
+                  }
+                },
+                icon: const Icon(Icons.add_location_alt, size: 14),
+                label: const Text("Add 'Room 302' Node",
+                    style: TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFF00E5FF),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  _indoorMappingService.attemptOcrLandmarkSnap("RM 302 SMITH");
+                },
+                icon: const Icon(Icons.document_scanner, size: 14),
+                label: const Text("Test OCR Plaque Snap",
+                    style: TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFF76FF03),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrustedAngelsCard() {
+    final call = _lastCallState;
+    final isBusy = call.status == TrustedAngelCallStatus.dialing ||
+        call.status == TrustedAngelCallStatus.connected;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isBusy
+              ? const Color(0xFF76FF03)
+              : const Color(0xFFFF1744).withValues(alpha: 0.5),
+          width: 1.5,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.volunteer_activism,
+                      color: isBusy
+                          ? const Color(0xFF76FF03)
+                          : const Color(0xFFFF1744),
+                      size: 20),
+                  const SizedBox(width: 8),
+                  const Text(
+                    "TRUSTED ANGELS CAREGIVER CALL",
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.1,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isBusy
+                      ? const Color(0xFF76FF03).withValues(alpha: 0.2)
+                      : Colors.white10,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  call.status.name.toUpperCase(),
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: isBusy ? const Color(0xFF76FF03) : Colors.white60,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A0E17),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  isBusy
+                      ? Icons.video_camera_front
+                      : Icons.phone_in_talk_outlined,
+                  size: 32,
+                  color: isBusy
+                      ? const Color(0xFF76FF03)
+                      : const Color(0xFF00E5FF),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isBusy
+                            ? (call.activeContact?.name ?? "Connected Angel")
+                            : "No Active Call Session",
+                        style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        isBusy
+                            ? "P2P WebRTC Active • Duration: ${call.callDuration.inSeconds}s • Zero-Cloud"
+                            : "1-Tap instant video assistance from verified family or volunteer caregivers.",
+                        style: const TextStyle(
+                            fontSize: 11, color: Colors.white70),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    if (isBusy) {
+                      _angelsCallService.endCall();
+                    } else {
+                      _angelsCallService.startCall();
+                    }
+                  },
+                  icon:
+                      Icon(isBusy ? Icons.call_end : Icons.add_call, size: 18),
+                  label: Text(
+                    isBusy ? "End Angel Call" : "1-Tap Call Volunteer Angel",
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.bold),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isBusy
+                        ? const Color(0xFFFF1744)
+                        : const Color(0xFF76FF03),
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),

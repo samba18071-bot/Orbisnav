@@ -385,7 +385,5 @@ class AudioMutexController {
 
   void dispose() {
     hardStop();
-    _activeSpeechController.close();
-    _statusController.close();
   }
 }
