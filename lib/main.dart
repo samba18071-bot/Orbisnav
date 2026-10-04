@@ -2598,54 +2598,60 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         children: [
           // Tab 0: Safety HUD
           Expanded(
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                key: const Key('mode_tab_safety'),
-                borderRadius: BorderRadius.circular(8),
-                onTap: () {
-                  setState(() => _activeNavTab = 0);
-                  _audioMutex.speak(
-                    text: "Switched to Safety Hazard HUD.",
-                    priority: AudioPriority.level2Navigation,
-                    haptic: true,
-                  );
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  decoration: BoxDecoration(
-                    color: _activeNavTab == 0
-                        ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
+            child: Semantics(
+              button: true,
+              selected: _activeNavTab == 0,
+              label: "Safety Hazard HUD Mode",
+              hint: "Double tap to switch to Safety Hazard HUD mode for real-time obstacle avoidance",
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  key: const Key('mode_tab_safety'),
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () {
+                    setState(() => _activeNavTab = 0);
+                    _audioMutex.speak(
+                      text: "Switched to Safety Hazard HUD.",
+                      priority: AudioPriority.level2Navigation,
+                      haptic: true,
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
                       color: _activeNavTab == 0
-                          ? const Color(0xFF00E5FF)
+                          ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
                           : Colors.transparent,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.shield_outlined,
-                        size: 15,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
                         color: _activeNavTab == 0
                             ? const Color(0xFF00E5FF)
-                            : Colors.white60,
+                            : Colors.transparent,
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        "Safety HUD",
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.shield_outlined,
+                          size: 15,
                           color: _activeNavTab == 0
                               ? const Color(0xFF00E5FF)
                               : Colors.white60,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 4),
+                        Text(
+                          "Safety HUD",
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: _activeNavTab == 0
+                                ? const Color(0xFF00E5FF)
+                                : Colors.white60,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -2654,54 +2660,60 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           const SizedBox(width: 4),
           // Tab 1: Pedestrian & Indoor Nav
           Expanded(
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                key: const Key('mode_tab_navigation'),
-                borderRadius: BorderRadius.circular(8),
-                onTap: () {
-                  setState(() => _activeNavTab = 1);
-                  _audioMutex.speak(
-                    text: "Switched to Pedestrian and Indoor Navigation.",
-                    priority: AudioPriority.level2Navigation,
-                    haptic: true,
-                  );
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  decoration: BoxDecoration(
-                    color: _activeNavTab == 1
-                        ? const Color(0xFFFFD600).withValues(alpha: 0.2)
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
+            child: Semantics(
+              button: true,
+              selected: _activeNavTab == 1,
+              label: "Pedestrian and Indoor Navigation Mode",
+              hint: "Double tap to switch to Pedestrian turn-by-turn navigation and indoor self-mapping",
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  key: const Key('mode_tab_navigation'),
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () {
+                    setState(() => _activeNavTab = 1);
+                    _audioMutex.speak(
+                      text: "Switched to Pedestrian and Indoor Navigation.",
+                      priority: AudioPriority.level2Navigation,
+                      haptic: true,
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
                       color: _activeNavTab == 1
-                          ? const Color(0xFFFFD600)
+                          ? const Color(0xFFFFD600).withValues(alpha: 0.2)
                           : Colors.transparent,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.directions_walk,
-                        size: 15,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
                         color: _activeNavTab == 1
                             ? const Color(0xFFFFD600)
-                            : Colors.white60,
+                            : Colors.transparent,
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        "Navigation",
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.directions_walk,
+                          size: 15,
                           color: _activeNavTab == 1
                               ? const Color(0xFFFFD600)
                               : Colors.white60,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 4),
+                        Text(
+                          "Navigation",
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: _activeNavTab == 1
+                                ? const Color(0xFFFFD600)
+                                : Colors.white60,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -2710,54 +2722,60 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           const SizedBox(width: 4),
           // Tab 2: Living & Angels
           Expanded(
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                key: const Key('mode_tab_living'),
-                borderRadius: BorderRadius.circular(8),
-                onTap: () {
-                  setState(() => _activeNavTab = 2);
-                  _audioMutex.speak(
-                    text: "Switched to Daily Living Tools and Trusted Angels.",
-                    priority: AudioPriority.level2Navigation,
-                    haptic: true,
-                  );
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  decoration: BoxDecoration(
-                    color: _activeNavTab == 2
-                        ? const Color(0xFF76FF03).withValues(alpha: 0.2)
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
+            child: Semantics(
+              button: true,
+              selected: _activeNavTab == 2,
+              label: "Daily Living Tools and Trusted Angels Caregivers Mode",
+              hint: "Double tap to switch to barcode scanner, offline currency, document reader, and 1-tap caregiver call",
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  key: const Key('mode_tab_living'),
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () {
+                    setState(() => _activeNavTab = 2);
+                    _audioMutex.speak(
+                      text: "Switched to Daily Living Tools and Trusted Angels.",
+                      priority: AudioPriority.level2Navigation,
+                      haptic: true,
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
                       color: _activeNavTab == 2
-                          ? const Color(0xFF76FF03)
+                          ? const Color(0xFF76FF03).withValues(alpha: 0.2)
                           : Colors.transparent,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.volunteer_activism_outlined,
-                        size: 15,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
                         color: _activeNavTab == 2
                             ? const Color(0xFF76FF03)
-                            : Colors.white60,
+                            : Colors.transparent,
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        "Living & Care",
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.volunteer_activism_outlined,
+                          size: 15,
                           color: _activeNavTab == 2
                               ? const Color(0xFF76FF03)
                               : Colors.white60,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 4),
+                        Text(
+                          "Living & Care",
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: _activeNavTab == 2
+                                ? const Color(0xFF76FF03)
+                                : Colors.white60,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -3461,29 +3479,36 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           Row(
             children: [
               Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    if (isBusy) {
-                      _angelsCallService.endCall();
-                    } else {
-                      _angelsCallService.startCall();
-                    }
-                  },
-                  icon:
-                      Icon(isBusy ? Icons.call_end : Icons.add_call, size: 18),
-                  label: Text(
-                    isBusy ? "End Angel Call" : "1-Tap Call Volunteer Angel",
-                    style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.bold),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isBusy
-                        ? const Color(0xFFFF1744)
-                        : const Color(0xFF76FF03),
-                    foregroundColor: Colors.black,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
+                child: Semantics(
+                  button: true,
+                  label: isBusy ? "End Angel Call" : "1-Tap Call Volunteer Angel",
+                  hint: isBusy
+                      ? "Double tap to hang up caregiver call"
+                      : "Double tap to instantly start peer-to-peer video call with a verified caregiver or family member",
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      if (isBusy) {
+                        _angelsCallService.endCall();
+                      } else {
+                        _angelsCallService.startCall();
+                      }
+                    },
+                    icon:
+                        Icon(isBusy ? Icons.call_end : Icons.add_call, size: 18),
+                    label: Text(
+                      isBusy ? "End Angel Call" : "1-Tap Call Volunteer Angel",
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.bold),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isBusy
+                          ? const Color(0xFFFF1744)
+                          : const Color(0xFF76FF03),
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
                   ),
                 ),
               ),
