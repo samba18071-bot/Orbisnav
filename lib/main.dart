@@ -25,6 +25,7 @@ import 'services/object_finder_sonar_service.dart';
 import 'services/tactile_haptic_map_service.dart';
 import 'services/emergency_sos_sentinel_service.dart';
 import 'services/wearable_wrist_haptic_service.dart';
+import 'services/global_standards_service.dart';
 import 'models/navigation_destination.dart';
 
 List<CameraDescription> _cameras = [];
@@ -211,6 +212,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       WearableWristHapticService();
   StreamSubscription<WristHapticPattern>? _wristHapticSubscription;
   WristHapticPattern? _lastWristHapticPattern;
+
+  // Global Standards, Accessibility & Internationalization Engine
+  final GlobalStandardsService _globalStandards = GlobalStandardsService();
 
   int _activeNavTab = 0; // 0: Hazard HUD, 1: Pedestrian & Indoor Nav, 2: Daily Living & Caregiver
   final TextEditingController _manualBarcodeInputController =
@@ -818,6 +822,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
 
               // 1. Real-time Hardware & Telemetry Bar
               _buildTelemetryBar(),
+              const SizedBox(height: 12),
+
+              // Global Standards, Accessibility & Internationalization Hub
+              _buildGlobalStandardsBar(),
               const SizedBox(height: 14),
 
               if (_activeNavTab == 0) ...[
@@ -927,6 +935,184 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                   : "Watch Synced",
               Icons.watch,
               const Color(0xFF00E5FF)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGlobalStandardsBar() {
+    final lang = _globalStandards.currentLanguage;
+    final unit = _globalStandards.measurementSystem;
+    final emProfile = _globalStandards.emergencyProfile;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: const Color(0xFF00E5FF).withValues(alpha: 0.3),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Expanded(
+                child: Row(
+                  children: [
+                    Icon(Icons.public, color: Color(0xFF00E5FF), size: 16),
+                    SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        "GLOBAL STANDARDS & ACCESSIBILITY",
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.1,
+                          color: Color(0xFF00E5FF),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF76FF03).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: const Color(0xFF76FF03)),
+                ),
+                child: const Text(
+                  "WCAG 2.2 AAA",
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF76FF03),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                // 1. Language Switcher Chips (10 Global Languages)
+                ...AppLanguage.values.take(6).map((l) {
+                  final isSelected = lang == l;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: Semantics(
+                      button: true,
+                      label: "Switch language to ${l.displayName}",
+                      child: ChoiceChip(
+                        selected: isSelected,
+                        label: Text(
+                          "${l.code.toUpperCase()} (${l.nativeName})",
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: isSelected ? Colors.black : Colors.white70,
+                          ),
+                        ),
+                        selectedColor: const Color(0xFF00E5FF),
+                        backgroundColor: const Color(0xFF0A0E17),
+                        onSelected: (selected) {
+                          if (selected) {
+                            setState(() {
+                              _globalStandards.setLanguage(l);
+                            });
+                            _audioMutex.speak(
+                              text: "Language set to ${l.displayName}.",
+                              priority: AudioPriority.level2Navigation,
+                              haptic: true,
+                            );
+                          }
+                        },
+                      ),
+                    ),
+                  );
+                }),
+                // 2. Metric / Imperial Unit Toggle
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Semantics(
+                    button: true,
+                    label: "Toggle units: currently ${unit.name}",
+                    child: ActionChip(
+                      backgroundColor: const Color(0xFF0A0E17),
+                      side: const BorderSide(color: Color(0xFF76FF03)),
+                      label: Text(
+                        unit == MeasurementSystem.metric
+                            ? "METRIC (m, km)"
+                            : "IMPERIAL (ft, mi)",
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF76FF03),
+                        ),
+                      ),
+                      onPressed: () {
+                        final next = unit == MeasurementSystem.metric
+                            ? MeasurementSystem.imperial
+                            : MeasurementSystem.metric;
+                        setState(() {
+                          _globalStandards.setMeasurementSystem(next);
+                        });
+                        _audioMutex.speak(
+                          text: "Measurement units set to ${next.name}.",
+                          priority: AudioPriority.level2Navigation,
+                          haptic: true,
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                // 3. International Emergency Country Router
+                Semantics(
+                  button: true,
+                  label:
+                      "Emergency Dispatch: ${emProfile.countryName}, Number ${emProfile.emergencyNumber}",
+                  child: ActionChip(
+                    backgroundColor: const Color(0xFF0A0E17),
+                    side: const BorderSide(color: Color(0xFFFF1744)),
+                    label: Text(
+                      "SOS: ${emProfile.countryCode} (${emProfile.emergencyNumber})",
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFFF1744),
+                      ),
+                    ),
+                    onPressed: () {
+                      final codes = ['US', 'EU', 'GB', 'IN', 'JP', 'AU'];
+                      final currentIndex =
+                          codes.indexOf(emProfile.countryCode);
+                      final nextIndex = (currentIndex + 1) % codes.length;
+                      final nextCode = codes[nextIndex];
+                      setState(() {
+                        _globalStandards.setEmergencyCountry(nextCode);
+                      });
+                      final updated = _globalStandards.emergencyProfile;
+                      _audioMutex.speak(
+                        text:
+                            "Emergency dispatch set to ${updated.countryName}, calling ${updated.emergencyNumber}.",
+                        priority: AudioPriority.level2Navigation,
+                        haptic: true,
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );

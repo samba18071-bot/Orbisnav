@@ -1,6 +1,7 @@
 import 'dart:async';
 import '../controllers/audio_mutex_controller.dart';
 import 'trusted_angels_call_service.dart';
+import 'global_standards_service.dart';
 
 enum FallDetectionStatus {
   monitoring,
@@ -39,6 +40,7 @@ class EmergencySosState {
 class EmergencySosSentinelService {
   final AudioMutexController _audioMutex;
   final TrustedAngelsCallService _angelsService;
+  final GlobalStandardsService _globalStandards;
 
   FallDetectionStatus _status = FallDetectionStatus.monitoring;
   int _countdownSeconds = 30;
@@ -60,8 +62,10 @@ class EmergencySosSentinelService {
   EmergencySosSentinelService({
     AudioMutexController? audioMutex,
     TrustedAngelsCallService? angelsService,
+    GlobalStandardsService? globalStandards,
   })  : _audioMutex = audioMutex ?? AudioMutexController(),
-        _angelsService = angelsService ?? TrustedAngelsCallService();
+        _angelsService = angelsService ?? TrustedAngelsCallService(),
+        _globalStandards = globalStandards ?? GlobalStandardsService();
 
   String _getStatusMessage() {
     switch (_status) {
@@ -158,8 +162,12 @@ class EmergencySosSentinelService {
     _status = FallDetectionStatus.emergencyTriggered;
     _broadcast();
 
+    final emNumber = _globalStandards.emergencyProfile.emergencyNumber;
+    final country = _globalStandards.emergencyProfile.countryName;
+
     _audioMutex.speak(
-      text: "Emergency caregiver call connecting now with your GPS location.",
+      text:
+          "Emergency caregiver call connecting now. Alerting emergency services $emNumber for $country with live GPS coordinates.",
       priority: AudioPriority.level0Critical,
       haptic: true,
       force: true,

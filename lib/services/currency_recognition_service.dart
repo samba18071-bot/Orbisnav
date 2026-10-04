@@ -207,6 +207,81 @@ class BanknoteDenomination {
       spokenText: '50 Pounds note.',
       hapticPatternMs: [250, 250, 250],
     ),
+    // JPY (Japanese Yen)
+    BanknoteDenomination(
+      currency: CurrencyCode.jpy,
+      value: 1000,
+      symbol: '¥',
+      label: '1000 Yen',
+      spokenText: '1000 Japanese Yen note.',
+      hapticPatternMs: [100],
+    ),
+    BanknoteDenomination(
+      currency: CurrencyCode.jpy,
+      value: 5000,
+      symbol: '¥',
+      label: '5000 Yen',
+      spokenText: '5000 Japanese Yen note.',
+      hapticPatternMs: [100, 100],
+    ),
+    BanknoteDenomination(
+      currency: CurrencyCode.jpy,
+      value: 10000,
+      symbol: '¥',
+      label: '10000 Yen',
+      spokenText: '10000 Japanese Yen note.',
+      hapticPatternMs: [250, 250],
+    ),
+    // CAD (Canadian Dollar)
+    BanknoteDenomination(
+      currency: CurrencyCode.cad,
+      value: 5,
+      symbol: 'CAD\$',
+      label: '5 Dollars CAD',
+      spokenText: '5 Canadian Dollars note.',
+      hapticPatternMs: [100],
+    ),
+    BanknoteDenomination(
+      currency: CurrencyCode.cad,
+      value: 10,
+      symbol: 'CAD\$',
+      label: '10 Dollars CAD',
+      spokenText: '10 Canadian Dollars note.',
+      hapticPatternMs: [100, 100],
+    ),
+    BanknoteDenomination(
+      currency: CurrencyCode.cad,
+      value: 20,
+      symbol: 'CAD\$',
+      label: '20 Dollars CAD',
+      spokenText: '20 Canadian Dollars note.',
+      hapticPatternMs: [250],
+    ),
+    // AUD (Australian Dollar)
+    BanknoteDenomination(
+      currency: CurrencyCode.aud,
+      value: 5,
+      symbol: 'AUD\$',
+      label: '5 Dollars AUD',
+      spokenText: '5 Australian Dollars note.',
+      hapticPatternMs: [100],
+    ),
+    BanknoteDenomination(
+      currency: CurrencyCode.aud,
+      value: 10,
+      symbol: 'AUD\$',
+      label: '10 Dollars AUD',
+      spokenText: '10 Australian Dollars note.',
+      hapticPatternMs: [100, 100],
+    ),
+    BanknoteDenomination(
+      currency: CurrencyCode.aud,
+      value: 20,
+      symbol: 'AUD\$',
+      label: '20 Dollars AUD',
+      spokenText: '20 Australian Dollars note.',
+      hapticPatternMs: [250],
+    ),
   ];
 }
 
@@ -369,7 +444,8 @@ class CurrencyRecognitionService {
             token.contains('${valStr}dollars') ||
             token.contains('${valStr}rupees') ||
             token.contains('${valStr}euros') ||
-            token.contains('${valStr}pounds')) {
+            token.contains('${valStr}pounds') ||
+            token.contains('${valStr}yen')) {
           return note;
         }
       }
