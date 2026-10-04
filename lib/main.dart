@@ -20,6 +20,11 @@ import 'services/pedestrian_navigation_service.dart';
 import 'services/indoor_self_mapping_service.dart';
 import 'services/spatial_binaural_earcon_service.dart';
 import 'services/trusted_angels_call_service.dart';
+import 'services/transit_sentinel_service.dart';
+import 'services/object_finder_sonar_service.dart';
+import 'services/tactile_haptic_map_service.dart';
+import 'services/emergency_sos_sentinel_service.dart';
+import 'services/wearable_wrist_haptic_service.dart';
 import 'models/navigation_destination.dart';
 
 List<CameraDescription> _cameras = [];
@@ -181,6 +186,32 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   StreamSubscription<TrustedAngelCallSession>? _angelsCallSubscription;
   TrustedAngelCallSession _lastCallState = TrustedAngelCallSession.idle();
 
+  // World-Class Assistive Add-Ons
+  final TransitSentinelService _transitService = TransitSentinelService();
+  StreamSubscription<TransitAlertState>? _transitSubscription;
+  TransitAlertState _lastTransitAlert = TransitAlertState.idle();
+
+  final ObjectFinderSonarService _objectFinderService =
+      ObjectFinderSonarService();
+  StreamSubscription<ObjectFinderTarget>? _objectFinderSubscription;
+  ObjectFinderTarget _lastObjectFinderState =
+      ObjectFinderTarget.initial("keys");
+
+  final TactileHapticMapService _tactileMapService =
+      TactileHapticMapService();
+  TactileTouchResult? _lastTactileTouchResult;
+
+  final EmergencySosSentinelService _emergencySosService =
+      EmergencySosSentinelService();
+  StreamSubscription<EmergencySosState>? _emergencySosSubscription;
+  EmergencySosState _lastEmergencySosState =
+      EmergencySosState.monitoring();
+
+  final WearableWristHapticService _wristHapticService =
+      WearableWristHapticService();
+  StreamSubscription<WristHapticPattern>? _wristHapticSubscription;
+  WristHapticPattern? _lastWristHapticPattern;
+
   int _activeNavTab = 0; // 0: Hazard HUD, 1: Pedestrian & Indoor Nav, 2: Daily Living & Caregiver
   final TextEditingController _manualBarcodeInputController =
       TextEditingController();
@@ -220,6 +251,12 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           _primaryHazard = result.highestHazard;
           _optimalPath = result.optimalPath;
         });
+        // World-Class Add-On Services Real-Time Feed
+        _tactileMapService.updateObstacleGrid(result.obstacles);
+        _objectFinderService.updateVisionCandidates(result.obstacles);
+        _transitService.evaluatePlatformEdge(result.obstacles,
+            phonePitchDeg: _pitchDeg);
+
         // Real-Time 3D Binaural Earcon Hazard Spatializer
         if (result.highestHazard != null) {
           _earconService.dispatchSpatialEarcon(
@@ -336,6 +373,41 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       }
     });
 
+    _transitSubscription = _transitService.alertStream.listen((alert) {
+      if (mounted) {
+        setState(() {
+          _lastTransitAlert = alert;
+        });
+      }
+    });
+
+    _objectFinderSubscription =
+        _objectFinderService.stateStream.listen((state) {
+      if (mounted) {
+        setState(() {
+          _lastObjectFinderState = state;
+        });
+      }
+    });
+
+    _emergencySosSubscription =
+        _emergencySosService.stateStream.listen((state) {
+      if (mounted) {
+        setState(() {
+          _lastEmergencySosState = state;
+        });
+      }
+    });
+
+    _wristHapticSubscription =
+        _wristHapticService.hapticStream.listen((pattern) {
+      if (mounted) {
+        setState(() {
+          _lastWristHapticPattern = pattern;
+        });
+      }
+    });
+
     // 5. Initialize GPS & 4km Radius POI Discovery
     await _navService.initializeGpsAndNearby();
 
@@ -398,6 +470,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       // Always update pitch and roll variables instantly for vision calculations
       _pitchDeg = pitchDeg;
       _rollDeg = rollDeg;
+
+      // Ingest accelerometer into Fall & Accident Sentinel
+      _emergencySosService.ingestAccelerometer(x: ax, y: ay, z: az);
 
       // PDR Step Detection
       final magnitude = math.sqrt(ax * ax + ay * ay + az * az);
@@ -587,6 +662,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _indoorMappingSubscription?.cancel();
     _earconSubscription?.cancel();
     _angelsCallSubscription?.cancel();
+    _transitSubscription?.cancel();
+    _objectFinderSubscription?.cancel();
+    _emergencySosSubscription?.cancel();
+    _wristHapticSubscription?.cancel();
     _barcodeService.dispose();
     _currencyService.dispose();
     _framingGuideService.dispose();
@@ -597,6 +676,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _indoorMappingService.dispose();
     _earconService.dispose();
     _angelsCallService.dispose();
+    _transitService.dispose();
+    _objectFinderService.dispose();
+    _tactileMapService.dispose();
+    _emergencySosService.dispose();
+    _wristHapticService.dispose();
     _speechSubscription?.cancel();
     _destinationInputController.dispose();
     _manualBarcodeInputController.dispose();
@@ -738,7 +822,13 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
 
               if (_activeNavTab == 0) ...[
                 // Tab 0: Safety & Hazard HUD
+                _buildEmergencySosCard(),
+                const SizedBox(height: 14),
+
                 _buildPortraitCameraViewfinder(hasCriticalHazard),
+                const SizedBox(height: 14),
+
+                _buildTactileRoomMapCard(),
                 const SizedBox(height: 14),
 
                 _buildVoiceQACard(),
@@ -760,6 +850,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                 const SizedBox(height: 14),
               ] else if (_activeNavTab == 1) ...[
                 // Tab 1: Pedestrian Navigation & Indoor Self-Mapping
+                _buildTransitSentinelCard(),
+                const SizedBox(height: 14),
+
                 _buildPedestrianNavCard(),
                 const SizedBox(height: 14),
 
@@ -773,6 +866,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                 const SizedBox(height: 14),
               ] else ...[
                 // Tab 2: Daily Living Tools & Trusted Angels Caregivers
+                _buildObjectFinderSonarCard(),
+                const SizedBox(height: 14),
+
                 _buildTrustedAngelsCard(),
                 const SizedBox(height: 14),
 
@@ -824,6 +920,13 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               Icons.thermostat, const Color(0xFF76FF03)),
           _buildStat("BATTERY", "$_battery%", Icons.battery_charging_full,
               Colors.greenAccent),
+          _buildStat(
+              "WEARABLE",
+              _lastWristHapticPattern != null
+                  ? "${_lastWristHapticPattern!.patternMs.length} pulse"
+                  : "Watch Synced",
+              Icons.watch,
+              const Color(0xFF00E5FF)),
         ],
       ),
     );
@@ -3367,6 +3470,558 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     );
   }
 
+  void _handleTactileTouch(Offset localPos, double boxWidth, double boxHeight) {
+    if (boxWidth <= 0 || boxHeight <= 0) return;
+    final normX = (localPos.dx / boxWidth).clamp(0.0, 1.0);
+    final normY = (localPos.dy / boxHeight).clamp(0.0, 1.0);
+    final result = _tactileMapService.inspectScreenPoint(normX, normY);
+    setState(() {
+      _lastTactileTouchResult = result;
+    });
+    if (result.shouldVibrate) {
+      HapticFeedback.selectionClick();
+    }
+  }
+
+  Widget _buildTactileRoomMapCard() {
+    final result = _lastTactileTouchResult;
+    final cellName = result?.label ?? "Drag finger on grid to feel obstacles";
+    final cellDist = result != null ? "${result.distanceMeters.toStringAsFixed(1)}m ahead" : "Touch & Drag to explore";
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.touch_app, color: Color(0xFF00E5FF), size: 18),
+              SizedBox(width: 8),
+              Text(
+                "TACTILE SCREEN MAP EXPLORER",
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.1,
+                  color: Color(0xFF00E5FF),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            "Feel your surroundings without walking. Drag finger across the surface below.",
+            style: TextStyle(fontSize: 11, color: Colors.white70),
+          ),
+          const SizedBox(height: 10),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final width = constraints.maxWidth;
+              const height = 140.0;
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanDown: (d) => _handleTactileTouch(d.localPosition, width, height),
+                onPanUpdate: (d) => _handleTactileTouch(d.localPosition, width, height),
+                child: Container(
+                  height: height,
+                  width: width,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0A0E17),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: Stack(
+                    children: [
+                      CustomPaint(
+                        size: Size(width, height),
+                        painter: _TactileGridPainter(
+                          touchResult: result,
+                          obstacles: _activeObstacles,
+                        ),
+                      ),
+                      Center(
+                        child: Text(
+                          result == null ? "TOUCH & DRAG TO FEEL ROOM" : cellName,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: result?.shouldVibrate == true
+                                ? const Color(0xFFFF1744)
+                                : const Color(0xFF76FF03),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  "Point: $cellName",
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: Colors.white70),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                cellDist,
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF00E5FF),
+                    fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmergencySosCard() {
+    final sos = _lastEmergencySosState;
+    final isCountdown =
+        sos.status == FallDetectionStatus.fallDetectedCountdown;
+    final isLanyard = _wristHapticService.isChestLanyardModeEnabled;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isCountdown
+              ? const Color(0xFFFF1744)
+              : const Color(0xFFFF9100).withValues(alpha: 0.4),
+          width: isCountdown ? 2.0 : 1.0,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.health_and_safety,
+                      color: isCountdown
+                          ? const Color(0xFFFF1744)
+                          : const Color(0xFFFF9100),
+                      size: 18,
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        "EMERGENCY FALL & SOS SENTINEL",
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.1,
+                          color: isCountdown
+                              ? const Color(0xFFFF1744)
+                              : const Color(0xFFFF9100),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isCountdown
+                      ? const Color(0xFFFF1744).withValues(alpha: 0.2)
+                      : Colors.white10,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  isCountdown
+                      ? "FALL DETECTED (${sos.countdownRemainingSeconds}s)"
+                      : "MONITORING",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color:
+                        isCountdown ? const Color(0xFFFF1744) : Colors.white60,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            sos.statusMessage,
+            style: TextStyle(
+              fontSize: 11,
+              color: isCountdown ? const Color(0xFFFF1744) : Colors.white70,
+              fontWeight: isCountdown ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              if (isCountdown)
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () {
+                      _emergencySosService.cancelEmergency();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF76FF03),
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    child: const Text("I AM OKAY (CANCEL SOS)", style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                )
+              else ...[
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      _emergencySosService.triggerManualSos();
+                    },
+                    icon: const Icon(Icons.emergency, size: 14),
+                    label: const Text("Test SOS Alert (30s)", style: TextStyle(fontSize: 10)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E293B),
+                      foregroundColor: const Color(0xFFFF1744),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      setState(() {
+                        _wristHapticService.setChestLanyardMode(!isLanyard, currentPitchDeg: _pitchDeg);
+                      });
+                    },
+                    icon: Icon(isLanyard ? Icons.check_circle : Icons.accessibility_new, size: 14),
+                    label: Text(
+                      isLanyard ? "Chest Lanyard ON" : "Hands-Free Lanyard",
+                      style: const TextStyle(fontSize: 10),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E293B),
+                      foregroundColor: isLanyard ? const Color(0xFF76FF03) : Colors.white70,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTransitSentinelCard() {
+    final alert = _lastTransitAlert;
+    final isDanger = alert.isEmergencyEdgeHazard;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isDanger ? const Color(0xFFFF1744) : const Color(0xFF00E5FF).withValues(alpha: 0.4),
+          width: isDanger ? 2.0 : 1.0,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Row(
+                  children: [
+                    Icon(Icons.directions_bus,
+                        color: isDanger
+                            ? const Color(0xFFFF1744)
+                            : const Color(0xFF00E5FF),
+                        size: 18),
+                    const SizedBox(width: 8),
+                    const Flexible(
+                      child: Text(
+                        "PUBLIC TRANSIT & PLATFORM SENTINEL",
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.1,
+                          color: Color(0xFF00E5FF),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isDanger
+                      ? const Color(0xFFFF1744).withValues(alpha: 0.2)
+                      : Colors.white10,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  isDanger ? "PLATFORM HAZARD" : "ACTIVE SENTINEL",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: isDanger ? const Color(0xFFFF1744) : Colors.white60,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            alert.description,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: isDanger ? const Color(0xFFFF1744) : const Color(0xFF76FF03),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              ElevatedButton.icon(
+                onPressed: () {
+                  _transitService.processBusHeadsign(
+                    ocrLines: ["METRO TRANSIT", "42 EXPRESS", "CIVIC CENTER"],
+                    distanceMeters: 14.5,
+                  );
+                },
+                icon: const Icon(Icons.directions_bus, size: 14),
+                label: const Text("Simulate Bus 42", style: TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFF76FF03),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  _transitService.evaluatePlatformEdgeSafety(
+                    tactilePavingVisible: true,
+                    platformDropOffVisible: true,
+                    dropOffDistanceMeters: 1.1,
+                    trainPresent: false,
+                  );
+                },
+                icon: const Icon(Icons.warning, size: 14),
+                label: const Text("Simulate Platform Edge", style: TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFFFF1744),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildObjectFinderSonarCard() {
+    final finder = _lastObjectFinderState;
+    final isSearching = _objectFinderService.isSearching;
+    final chips = ["keys", "white cane", "water bottle", "wallet", "phone"];
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF76FF03).withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Expanded(
+                child: Row(
+                  children: [
+                    Icon(Icons.radar, color: Color(0xFF76FF03), size: 18),
+                    SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        "LOST ITEM FINDER (AUDIO SONAR RADAR)",
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.1,
+                          color: Color(0xFF76FF03),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isSearching
+                      ? const Color(0xFF76FF03).withValues(alpha: 0.2)
+                      : Colors.white10,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  isSearching ? "RADAR ACTIVE" : "IDLE",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color:
+                        isSearching ? const Color(0xFF76FF03) : Colors.white60,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: chips.map((chip) {
+                final isSelected = _objectFinderService.activeTargetLabel == chip;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: FilterChip(
+                    selected: isSelected,
+                    label: Text(chip.toUpperCase(), style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                    selectedColor: const Color(0xFF76FF03).withValues(alpha: 0.25),
+                    checkmarkColor: const Color(0xFF76FF03),
+                    backgroundColor: const Color(0xFF0A0E17),
+                    onSelected: (selected) {
+                      if (selected) {
+                        _objectFinderService.startSearch(chip);
+                      }
+                    },
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A0E17),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  finder.isFound ? Icons.check_circle : Icons.search,
+                  color: finder.isFound ? const Color(0xFF76FF03) : const Color(0xFF00E5FF),
+                  size: 24,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        finder.guidanceCue,
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                      if (finder.isFound)
+                        Text(
+                          "Sonar Ping: ${finder.sonarPingIntervalMs}ms • Pan: ${(finder.stereoPan * 100).toInt()}%",
+                          style: const TextStyle(fontSize: 10, color: Color(0xFF76FF03)),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    if (isSearching) {
+                      _objectFinderService.stopSearch();
+                    } else {
+                      _objectFinderService.startSearch(_objectFinderService.activeTargetLabel);
+                    }
+                  },
+                  icon: Icon(isSearching ? Icons.stop : Icons.play_arrow, size: 14),
+                  label: Text(isSearching ? "Stop Sonar Radar" : "Start Sonar Radar", style: const TextStyle(fontSize: 11)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isSearching ? const Color(0xFFFF1744) : const Color(0xFF76FF03),
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                onPressed: () {
+                  _objectFinderService.startSearch("keys");
+                  _objectFinderService.updateVisionCandidates([
+                    DetectedObstacle(
+                      label: "keys",
+                      confidence: 0.95,
+                      xMin: 0.65,
+                      yMin: 0.40,
+                      xMax: 0.85,
+                      yMax: 0.60,
+                      distanceMeters: 1.1,
+                      ttcSeconds: 3.0,
+                      priority: AudioPriority.level2Navigation,
+                      clockPosition: "2 o'clock",
+                    ),
+                  ]);
+                },
+                icon: const Icon(Icons.vpn_key, size: 14),
+                label: const Text("Simulate Keys", style: TextStyle(fontSize: 10)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFF00E5FF),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTrustedAngelsCard() {
     final call = _lastCallState;
     final isBusy = call.status == TrustedAngelCallStatus.dialing ||
@@ -4358,5 +5013,76 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   }
 }
 
+class _TactileGridPainter extends CustomPainter {
+  final TactileTouchResult? touchResult;
+  final List<DetectedObstacle> obstacles;
 
+  _TactileGridPainter({this.touchResult, required this.obstacles});
 
+  @override
+  void paint(Canvas canvas, Size size) {
+    final gridPaint = Paint()
+      ..color = Colors.white12
+      ..strokeWidth = 1.0
+      ..style = PaintingStyle.stroke;
+
+    // Draw 3x3 touch grid dividing lines
+    final cellW = size.width / 3.0;
+    final cellH = size.height / 3.0;
+    for (int i = 1; i < 3; i++) {
+      canvas.drawLine(
+          Offset(cellW * i, 0), Offset(cellW * i, size.height), gridPaint);
+      canvas.drawLine(
+          Offset(0, cellH * i), Offset(size.width, cellH * i), gridPaint);
+    }
+
+    // Draw detected obstacle bounding boxes
+    final obsFillPaint = Paint()
+      ..color = const Color(0xFFFF1744).withValues(alpha: 0.25)
+      ..style = PaintingStyle.fill;
+    final obsStrokePaint = Paint()
+      ..color = const Color(0xFFFF1744)
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+
+    for (final obs in obstacles) {
+      final rect = Rect.fromLTRB(
+        obs.xMin * size.width,
+        obs.yMin * size.height,
+        obs.xMax * size.width,
+        obs.yMax * size.height,
+      );
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(rect, const Radius.circular(6)), obsFillPaint);
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(rect, const Radius.circular(6)),
+          obsStrokePaint);
+    }
+
+    // Draw user touch target circle
+    if (touchResult != null) {
+      final touchPos = Offset(
+        touchResult!.normalizedX * size.width,
+        touchResult!.normalizedY * size.height,
+      );
+      final touchPaint = Paint()
+        ..color = touchResult!.shouldVibrate
+            ? const Color(0xFFFF1744)
+            : const Color(0xFF76FF03)
+        ..style = PaintingStyle.fill;
+      canvas.drawCircle(touchPos, 14, touchPaint);
+
+      final touchBorder = Paint()
+        ..color = Colors.white
+        ..strokeWidth = 2.0
+        ..style = PaintingStyle.stroke;
+      canvas.drawCircle(touchPos, 16, touchBorder);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TactileGridPainter oldDelegate) {
+    return oldDelegate.touchResult != touchResult ||
+        oldDelegate.obstacles != obstacles;
+  }
+}
