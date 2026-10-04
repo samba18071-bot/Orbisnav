@@ -26,6 +26,8 @@ import 'services/tactile_haptic_map_service.dart';
 import 'services/emergency_sos_sentinel_service.dart';
 import 'services/wearable_wrist_haptic_service.dart';
 import 'services/global_standards_service.dart';
+import 'services/smart_cane_ble_service.dart';
+import 'services/smart_glasses_bridge_service.dart';
 import 'models/navigation_destination.dart';
 
 List<CameraDescription> _cameras = [];
@@ -216,6 +218,16 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   // Global Standards, Accessibility & Internationalization Engine
   final GlobalStandardsService _globalStandards = GlobalStandardsService();
 
+  // 10/10 Hardware Ecosystem: Smart White Cane BLE & Wearable Smart Glasses
+  final SmartWhiteCaneBleService _smartCaneService = SmartWhiteCaneBleService();
+  StreamSubscription<SmartCaneState>? _smartCaneSubscription;
+  SmartCaneState _lastCaneState = SmartCaneState.initial();
+
+  final SmartGlassesBridgeService _smartGlassesService =
+      SmartGlassesBridgeService();
+  StreamSubscription<SmartGlassesState>? _smartGlassesSubscription;
+  SmartGlassesState _lastGlassesState = SmartGlassesState.initial();
+
   int _activeNavTab = 0; // 0: Hazard HUD, 1: Pedestrian & Indoor Nav, 2: Daily Living & Caregiver
   final TextEditingController _manualBarcodeInputController =
       TextEditingController();
@@ -248,17 +260,24 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     await _onDeviceDetector.initialize();
     _onDeviceSubscription = _onDeviceDetector.resultsStream.listen((result) {
       if (mounted) {
+        // Head-height overhead hazard filtering via Smart Glasses
+        var processedObstacles =
+            _smartGlassesService.filterHeadHeightHazards(result.obstacles);
+        // Ground-level ultrasonic sensor fusion via Smart White Cane BLE
+        processedObstacles = _smartCaneService.fuseObstaclesWithCane(
+            cameraObstacles: processedObstacles);
+
         setState(() {
           _inferenceLatencyMs = result.latencyMs;
           _visionStatus = result.statusMessage;
-          _activeObstacles = result.obstacles;
+          _activeObstacles = processedObstacles;
           _primaryHazard = result.highestHazard;
           _optimalPath = result.optimalPath;
         });
         // World-Class Add-On Services Real-Time Feed
-        _tactileMapService.updateObstacleGrid(result.obstacles);
-        _objectFinderService.updateVisionCandidates(result.obstacles);
-        _transitService.evaluatePlatformEdge(result.obstacles,
+        _tactileMapService.updateObstacleGrid(processedObstacles);
+        _objectFinderService.updateVisionCandidates(processedObstacles);
+        _transitService.evaluatePlatformEdge(processedObstacles,
             phonePitchDeg: _pitchDeg);
 
         // Real-Time 3D Binaural Earcon Hazard Spatializer
@@ -408,6 +427,23 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       if (mounted) {
         setState(() {
           _lastWristHapticPattern = pattern;
+        });
+      }
+    });
+
+    _smartCaneSubscription = _smartCaneService.stateStream.listen((state) {
+      if (mounted) {
+        setState(() {
+          _lastCaneState = state;
+        });
+      }
+    });
+
+    _smartGlassesSubscription =
+        _smartGlassesService.stateStream.listen((state) {
+      if (mounted) {
+        setState(() {
+          _lastGlassesState = state;
         });
       }
     });
@@ -670,6 +706,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _objectFinderSubscription?.cancel();
     _emergencySosSubscription?.cancel();
     _wristHapticSubscription?.cancel();
+    _smartCaneSubscription?.cancel();
+    _smartGlassesSubscription?.cancel();
     _barcodeService.dispose();
     _currencyService.dispose();
     _framingGuideService.dispose();
@@ -685,6 +723,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _tactileMapService.dispose();
     _emergencySosService.dispose();
     _wristHapticService.dispose();
+    _smartCaneService.dispose();
+    _smartGlassesService.dispose();
     _speechSubscription?.cancel();
     _destinationInputController.dispose();
     _manualBarcodeInputController.dispose();
@@ -829,6 +869,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               const SizedBox(height: 14),
 
               if (_activeNavTab == 0) ...[
+                // Smart Hardware Ecosystem (Smart White Cane BLE & Smart Glasses)
+                _buildSmartHardwareEcosystemCard(),
+                const SizedBox(height: 14),
+
                 // Tab 0: Safety & Hazard HUD
                 _buildEmergencySosCard(),
                 const SizedBox(height: 14),
@@ -935,6 +979,24 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                   : "Watch Synced",
               Icons.watch,
               const Color(0xFF00E5FF)),
+          _buildStat(
+              "CANE BLE",
+              _lastCaneState.connectionStatus == CaneConnectionStatus.connected
+                  ? "${_lastCaneState.batteryLevelPercent}%"
+                  : "Standby",
+              Icons.nordic_walking,
+              _lastCaneState.connectionStatus == CaneConnectionStatus.connected
+                  ? const Color(0xFF76FF03)
+                  : Colors.white38),
+          _buildStat(
+              "GLASSES",
+              _lastGlassesState.isConnected
+                  ? _lastGlassesState.activeMountMode.name.toUpperCase()
+                  : "Standby",
+              Icons.visibility,
+              _lastGlassesState.isConnected
+                  ? const Color(0xFF00E5FF)
+                  : Colors.white38),
         ],
       ),
     );
@@ -1109,6 +1171,330 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                       );
                     },
                   ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSmartHardwareEcosystemCard() {
+    final caneConnected =
+        _lastCaneState.connectionStatus == CaneConnectionStatus.connected;
+    final glassesConnected = _lastGlassesState.isConnected;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: const Color(0xFF00E5FF).withValues(alpha: 0.4),
+          width: 1.5,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.devices_other,
+                      color: Color(0xFF00E5FF), size: 20),
+                  SizedBox(width: 8),
+                  Text(
+                    "SMART HARDWARE ECOSYSTEM",
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.2,
+                      color: Color(0xFF00E5FF),
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF76FF03).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: const Color(0xFF76FF03)),
+                ),
+                child: const Text(
+                  "10/10 TIER",
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF76FF03),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Sub-section A: Smart White Cane (BLE + Dual Haptics + Ultrasonic)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A0E17),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: caneConnected
+                    ? const Color(0xFF76FF03).withValues(alpha: 0.5)
+                    : Colors.white12,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.nordic_walking,
+                          color: caneConnected
+                              ? const Color(0xFF76FF03)
+                              : Colors.white38,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 6),
+                        const Text(
+                          "SMART WHITE CANE (BLE)",
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Semantics(
+                      button: true,
+                      label: caneConnected
+                          ? "Disconnect Smart White Cane"
+                          : "Pair Smart White Cane via Bluetooth",
+                      child: TextButton.icon(
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          backgroundColor: caneConnected
+                              ? Colors.redAccent.withValues(alpha: 0.15)
+                              : const Color(0xFF76FF03)
+                                  .withValues(alpha: 0.15),
+                        ),
+                        icon: Icon(
+                          caneConnected
+                              ? Icons.bluetooth_connected
+                              : Icons.bluetooth_searching,
+                          size: 14,
+                          color: caneConnected
+                              ? Colors.redAccent
+                              : const Color(0xFF76FF03),
+                        ),
+                        label: Text(
+                          caneConnected ? "DISCONNECT" : "CONNECT BLE",
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: caneConnected
+                                ? Colors.redAccent
+                                : const Color(0xFF76FF03),
+                          ),
+                        ),
+                        onPressed: () {
+                          if (caneConnected) {
+                            _smartCaneService.disconnect();
+                          } else {
+                            _smartCaneService.connectToSmartCane();
+                          }
+                          setState(() {});
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  caneConnected
+                      ? "Battery: ${_lastCaneState.batteryLevelPercent}% | Ground Dist: ${_lastCaneState.ultrasonicDistanceMeters.toStringAsFixed(2)}m"
+                      : "WeWALK / UltraCane BLE sensor integration standby.",
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: caneConnected
+                        ? const Color(0xFF76FF03)
+                        : Colors.white60,
+                  ),
+                ),
+                if (_lastCaneState.hasGroundObstacle ||
+                    _lastCaneState.hasPotholeOrDropOff) ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFF1744).withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFFF1744)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.warning,
+                            color: Color(0xFFFF1744), size: 14),
+                        const SizedBox(width: 6),
+                        Text(
+                          _lastCaneState.hasPotholeOrDropOff
+                              ? "CANE GROUND DROP-OFF DETECTED"
+                              : "CANE ULTRASONIC OBSTACLE AHEAD",
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFFFF1744),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // Sub-section B: Smart Vision Glasses (Eye-Level View & Overhead Hazards)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A0E17),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: glassesConnected
+                    ? const Color(0xFF00E5FF).withValues(alpha: 0.5)
+                    : Colors.white12,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.visibility,
+                          color: glassesConnected
+                              ? const Color(0xFF00E5FF)
+                              : Colors.white38,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 6),
+                        const Text(
+                          "SMART GLASSES (RAY-BAN / META)",
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Semantics(
+                      button: true,
+                      label: glassesConnected
+                          ? "Disconnect Smart Glasses"
+                          : "Pair Smart Glasses",
+                      child: TextButton.icon(
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          backgroundColor: glassesConnected
+                              ? Colors.redAccent.withValues(alpha: 0.15)
+                              : const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                        ),
+                        icon: Icon(
+                          glassesConnected ? Icons.link_off : Icons.link,
+                          size: 14,
+                          color: glassesConnected
+                              ? Colors.redAccent
+                              : const Color(0xFF00E5FF),
+                        ),
+                        label: Text(
+                          glassesConnected ? "DISCONNECT" : "CONNECT",
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: glassesConnected
+                                ? Colors.redAccent
+                                : const Color(0xFF00E5FF),
+                          ),
+                        ),
+                        onPressed: () {
+                          if (glassesConnected) {
+                            _smartGlassesService.disconnect();
+                          } else {
+                            _smartGlassesService.connectGlasses();
+                          }
+                          setState(() {});
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Text(
+                      "Perspective: ${_lastGlassesState.activeMountMode.name.toUpperCase()}",
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: glassesConnected
+                            ? const Color(0xFF00E5FF)
+                            : Colors.white60,
+                      ),
+                    ),
+                    const Spacer(),
+                    Semantics(
+                      button: true,
+                      label: "Cycle camera perspective mode",
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 2),
+                          side: const BorderSide(color: Color(0xFF00E5FF)),
+                        ),
+                        child: const Text(
+                          "SWITCH MODE",
+                          style: TextStyle(
+                              fontSize: 9, color: Color(0xFF00E5FF)),
+                        ),
+                        onPressed: () {
+                          final current = _lastGlassesState.activeMountMode;
+                          final next = current == CameraMountMode.smartGlasses
+                              ? CameraMountMode.chestLanyard
+                              : current == CameraMountMode.chestLanyard
+                                  ? CameraMountMode.handheld
+                                  : CameraMountMode.smartGlasses;
+                          _smartGlassesService.setMountMode(next);
+                          setState(() {});
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  "Eye-Level Overhead Hazard Guard: Active (Low branches & awnings < 2m)",
+                  style: TextStyle(fontSize: 10, color: Colors.white38),
                 ),
               ],
             ),
