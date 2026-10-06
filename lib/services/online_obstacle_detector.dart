@@ -64,9 +64,9 @@ class DetectedObstacle {
     }
   }
 
-  /// Full speech announcement with rich dynamic detail (e.g. "Person is walking towards you at 12 o'clock, 2.1 meters")
+  /// Full speech announcement with rich dynamic motion detail (e.g. "A person is walking towards you at 12 o'clock, 2.1 meters.")
   String get speechAnnouncement {
-    if (detailedDescription.isNotEmpty && !detailedDescription.endsWith("ahead")) {
+    if (detailedDescription.isNotEmpty) {
       return "$detailedDescription at $clockPosition, ${distanceMeters.toStringAsFixed(1)} meters.";
     }
     return "$label at $clockPosition, ${distanceMeters.toStringAsFixed(1)} meters.";

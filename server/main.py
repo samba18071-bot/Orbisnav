@@ -73,7 +73,7 @@ UNIVERSAL_CLASSES = [
     # Vehicles & Traffic Hazards
     "car", "bus", "truck", "motorcycle", "bicycle", "vehicle", "traffic light", "stop sign",
     # Pedestrians & Structural Elements
-    "person", "stairs", "stairs_up", "stairs_down", "door", "elevator", "window", "pillar", "pole", "fire hydrant",
+    "person", "stairs", "stairs_up", "stairs_down", "door", "elevator", "window", "pillar", "pole", "fire hydrant", "tree",
     # Furniture & Living Areas
     "chair", "couch", "sofa", "table", "dining table", "desk", "bed", "bench", "sink", "toilet", "potted plant", "trash bin",
     # Electronics & Workstation
@@ -121,6 +121,7 @@ OBJECT_PHYSICAL_PRIORS: Dict[str, Tuple[float, float, str, str]] = {
     "stop sign": (0.75, 0.75, "height", "critical"),
     "parking meter": (1.20, 0.25, "height", "safety"),
     "bench": (0.50, 1.50, "width", "safety"),
+    "tree": (3.50, 1.20, "height", "safety"),
 
     # People & Animals
     "person": (1.70, 0.50, "height", "waypoint"),
@@ -398,6 +399,19 @@ def analyze_frame(img: np.ndarray) -> List[Dict[str, Any]]:
         else:
             is_critical = False
 
+        # Assistive motion description & speech synthesis text
+        lower_cls = class_name.lower()
+        if "person" in lower_cls or "pedestrian" in lower_cls:
+            motion_desc = "A person walking towards you" if distance < 2.5 else "A person standing"
+        elif any(v in lower_cls for v in ["car", "bus", "truck", "motorcycle", "vehicle"]):
+            motion_desc = "A car is approaching you" if distance < 4.5 else "A vehicle ahead"
+        elif "tree" in lower_cls:
+            motion_desc = "A tree ahead"
+        else:
+            motion_desc = f"A {class_name.lower()} ahead"
+
+        speech_announcement = f"{motion_desc} at {clock_zone}, {distance} meters."
+
         detections.append({
             "label": class_name.title(),
             "clock_zone": clock_zone,
@@ -405,6 +419,8 @@ def analyze_frame(img: np.ndarray) -> List[Dict[str, Any]]:
             "ttc_seconds": ttc,
             "confidence": round(conf, 2),
             "is_critical": is_critical,
+            "motion_description": motion_desc,
+            "speech_announcement": speech_announcement,
             "bbox": [round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3)]
         })
 

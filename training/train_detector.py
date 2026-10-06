@@ -1,11 +1,13 @@
 """
-OrbisNav YOLOv8 Custom Object Detection Training Script.
-Fine-tunes YOLOv8-Nano on the custom assistive spatial perception dataset.
+OrbisNav YOLOv8 Custom Object Detection Training Script (Max Accuracy Edition).
+Fine-tunes YOLOv8-Nano on the comprehensive assistive spatial perception dataset.
+Includes trees, obstacles, vehicles, structural hazards, and pedestrians.
 Uses Apple Silicon Metal Performance Shaders (MPS) for high-speed GPU acceleration.
 """
 
 import os
 import sys
+import shutil
 import torch
 from ultralytics import YOLO
 
@@ -14,10 +16,10 @@ def main():
     root_dir = os.path.dirname(base_dir)
     yaml_path = os.path.join(base_dir, "dataset", "data.yaml")
 
-    if not os.path.exists(yaml_path):
-        print(f"Dataset configuration not found at {yaml_path}. Generating dataset first...")
-        from dataset_builder import build_dataset
-        yaml_path = build_dataset(num_train=350, num_val=75)
+    # Generate or refresh dataset configuration
+    print("Building procedural metadata dataset for maximum accuracy...")
+    from dataset_builder import build_dataset
+    yaml_path = build_dataset(num_train=600, num_val=120)
 
     # Determine optimal compute device (MPS for Mac M-series, or CPU)
     if torch.backends.mps.is_available():
@@ -34,45 +36,48 @@ def main():
     print(f"Loading base weights from: {pretrained_model}")
     model = YOLO(pretrained_model)
 
-    print("Starting fine-tuning on OrbisNav Navigation Dataset...")
-    # Train for 15 epochs (fast & accurate fine-tuning on custom dataset)
+    print("Starting high-accuracy training on OrbisNav Assistive Dataset...")
+    # Train for 25 epochs with cosine LR schedule and strong regularizers
     results = model.train(
         data=yaml_path,
-        epochs=15,
+        epochs=25,
         imgsz=640,
         batch=16,
         device=device,
         workers=2,
         project=os.path.join(base_dir, "runs"),
-        name="orbisnav_detector",
+        name="orbisnav_detector_max",
         exist_ok=True,
         verbose=True,
+        cos_lr=True,
+        lr0=0.008,
+        lrf=0.01,
+        warmup_epochs=2.0,
         mosaic=1.0,
-        mixup=0.1,
+        mixup=0.20,
+        hsv_h=0.015,
+        hsv_s=0.7,
+        hsv_v=0.4,
         degrees=10.0,
-        translate=0.1,
-        scale=0.2,
-        flipud=0.0,
+        translate=0.12,
+        scale=0.25,
         fliplr=0.5,
         save=True,
         save_period=-1,
         val=True
     )
 
-    best_weights = os.path.join(base_dir, "runs", "orbisnav_detector", "weights", "best.pt")
+    best_weights = os.path.join(base_dir, "runs", "orbisnav_detector_max", "weights", "best.pt")
     target_weights = os.path.join(root_dir, "yolov8n_orbisnav.pt")
 
     if os.path.exists(best_weights):
-        import shutil
         shutil.copyfile(best_weights, target_weights)
         print(f"\n==========================================")
         print(f"SUCCESS: Trained weights saved to: {target_weights}")
         print(f"==========================================\n")
     else:
-        # Fallback to last weights if best.pt wasn't populated
-        last_weights = os.path.join(base_dir, "runs", "orbisnav_detector", "weights", "last.pt")
+        last_weights = os.path.join(base_dir, "runs", "orbisnav_detector_max", "weights", "last.pt")
         if os.path.exists(last_weights):
-            import shutil
             shutil.copyfile(last_weights, target_weights)
             print(f"Saved last weights to: {target_weights}")
 
@@ -82,14 +87,17 @@ def main():
     val_results = val_model.val(data=yaml_path, device=device)
     
     print("\nTraining & Validation Benchmark Summary:")
-    print(f"Classes: {val_model.names}")
+    print(f"Classes ({len(val_model.names)}): {val_model.names}")
     print(f"mAP50: {val_results.box.map50:.4f}")
     print(f"mAP50-95: {val_results.box.map:.4f}")
 
-    # Export to ONNX for embedded / zero-heap runtime compatibility
+    # Export to ONNX for zero-heap runtime compatibility
     try:
         onnx_path = val_model.export(format="onnx", imgsz=640, dynamic=True)
-        print(f"Exported ONNX model to: {onnx_path}")
+        if os.path.exists(onnx_path):
+            root_onnx = os.path.join(root_dir, "yolov8n_orbisnav.onnx")
+            shutil.copyfile(onnx_path, root_onnx)
+            print(f"Exported and copied ONNX model to: {root_onnx}")
     except Exception as e:
         print(f"ONNX export note: {e}")
 

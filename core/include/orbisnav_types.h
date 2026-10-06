@@ -66,7 +66,8 @@ enum class ObstacleClass : uint16_t {
     Seating = 4,
     Pedestrian = 5,
     DropOff = 6,
-    Pillar = 7
+    Pillar = 7,
+    Tree = 8
 };
 
 // Bounding box in normalized coordinates [0, 1]

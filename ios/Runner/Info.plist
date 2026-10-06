@@ -66,5 +66,17 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>OrbisNav requires camera access for real-time spatial obstacle detection, text reading, and navigation assistance.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>OrbisNav requires microphone access for voice navigation commands and conversational assistance.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>OrbisNav requires location access to provide turn-by-turn navigation and emergency assistance.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>OrbisNav requires location access for continuous background route guidance.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>OrbisNav connects to Smart White Canes and Smart Glasses via Bluetooth Low Energy.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>OrbisNav connects to Smart White Canes and Smart Glasses via Bluetooth Low Energy.</string>
 </dict>
 </plist>

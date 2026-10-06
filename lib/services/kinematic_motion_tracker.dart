@@ -158,28 +158,28 @@ class KinematicMotionTracker {
     // 1. Detect Overhead / Low-Hanging Protrusions (Only for genuine trees/branches near top)
     if (isBranchOrOverhead && yMin < 0.15 && distanceMeters < 2.5) {
       motionType = ObjectMotionType.overheadHazard;
-      motionPhrase = "Low-hanging branch overhead";
+      motionPhrase = "Low-hanging tree branch overhead";
       priority = AudioPriority.level0Critical;
     }
     // 2. Lateral Crossing Dynamics (Moving left-to-right or right-to-left)
     else if (lateralVel > 0.18) {
       motionType = ObjectMotionType.crossingLeftToRight;
       if (isPerson) {
-        motionPhrase = "Person crossing left to right";
+        motionPhrase = "A person is walking to your right";
       } else if (isVehicle) {
-        motionPhrase = "Vehicle crossing left to right";
+        motionPhrase = "A car is moving to your right";
       } else {
-        motionPhrase = "$label moving left to right";
+        motionPhrase = "A $label is moving to your right";
       }
       priority = distanceMeters < 2.5 ? AudioPriority.level1Safety : AudioPriority.level2Navigation;
     } else if (lateralVel < -0.18) {
       motionType = ObjectMotionType.crossingRightToLeft;
       if (isPerson) {
-        motionPhrase = "Person crossing right to left";
+        motionPhrase = "A person is walking to your left";
       } else if (isVehicle) {
-        motionPhrase = "Vehicle crossing right to left";
+        motionPhrase = "A car is moving to your left";
       } else {
-        motionPhrase = "$label moving right to left";
+        motionPhrase = "A $label is moving to your left";
       }
       priority = distanceMeters < 2.5 ? AudioPriority.level1Safety : AudioPriority.level2Navigation;
     }
@@ -190,13 +190,13 @@ class KinematicMotionTracker {
       computedTtc = approachSpeed > 0.1 ? (distanceMeters / approachSpeed) : (distanceMeters / 1.5);
 
       if (isPerson) {
-        motionPhrase = "Person is walking towards you";
+        motionPhrase = "A person is walking towards you";
         priority = distanceMeters < 2.5 ? AudioPriority.level0Critical : AudioPriority.level1Safety;
       } else if (isVehicle) {
-        motionPhrase = "Vehicle is approaching you";
+        motionPhrase = "A car is approaching you";
         priority = AudioPriority.level0Critical;
       } else {
-        motionPhrase = "$label approaching";
+        motionPhrase = "A $label is approaching";
         priority = distanceMeters < 2.0 ? AudioPriority.level0Critical : AudioPriority.level1Safety;
       }
     }
@@ -204,13 +204,13 @@ class KinematicMotionTracker {
     else if (velocityMps > 0.28) {
       motionType = ObjectMotionType.movingAwayFromUser;
       if (isPerson) {
-        motionPhrase = "Person is walking away";
+        motionPhrase = "A person is walking away";
         priority = AudioPriority.level2Navigation;
       } else if (isVehicle) {
-        motionPhrase = "Vehicle is moving away";
+        motionPhrase = "A car is moving away";
         priority = AudioPriority.level2Navigation;
       } else {
-        motionPhrase = "$label moving away";
+        motionPhrase = "A $label is moving away";
         priority = AudioPriority.level2Navigation;
       }
     }
@@ -218,9 +218,11 @@ class KinematicMotionTracker {
     else {
       motionType = ObjectMotionType.stationaryAhead;
       if (isPerson) {
-        motionPhrase = "Person standing ahead";
+        motionPhrase = "A person standing";
       } else if (isVehicle) {
-        motionPhrase = "Stationary vehicle ahead";
+        motionPhrase = "A stationary vehicle";
+      } else if (lower.contains("tree")) {
+        motionPhrase = "A tree ahead";
       } else {
         motionPhrase = "$label ahead";
       }

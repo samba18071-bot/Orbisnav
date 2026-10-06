@@ -247,6 +247,7 @@ class OnDeviceObstacleDetector {
     "toilet": _ObjectPrior(0.75, 0.45, AudioPriority.level1Safety, "Toilet"),
     "door": _ObjectPrior(2.05, 0.85, AudioPriority.level1Safety, "Door"),
     "stairs": _ObjectPrior(1.50, 1.20, AudioPriority.level0Critical, "Stairs"),
+    "tree": _ObjectPrior(3.50, 1.40, AudioPriority.level1Safety, "Tree"),
 
     // 8. Workstation & Electronics
     "tv": _ObjectPrior(0.60, 1.00, AudioPriority.level2Navigation, "TV screen"),
@@ -400,10 +401,23 @@ class OnDeviceObstacleDetector {
           final prior = _getPriorForLabel(label);
 
           final bboxH = cand.yMax - cand.yMin;
+          final bboxW = cand.xMax - cand.xMin;
           final normalizedHeight = bboxH.clamp(0.04, 1.0);
+          final normalizedWidth = bboxW.clamp(0.04, 1.0);
 
-          // Calibrated pinhole distance estimation
-          double rawDistance = (_focalLengthRatio * prior.realHeightMeters) / normalizedHeight;
+          // Calibrated dual-axis pinhole distance estimation
+          final double distHeight = (_focalLengthRatio * prior.realHeightMeters) / normalizedHeight;
+          final double distWidth = ((_focalLengthRatio * 0.92) * prior.realWidthMeters) / normalizedWidth;
+
+          // Stable geometry-aware fusion
+          double rawDistance;
+          if (prior.realWidthMeters > prior.realHeightMeters * 1.35) {
+            rawDistance = distWidth;
+          } else if (prior.realHeightMeters > prior.realWidthMeters * 1.6) {
+            rawDistance = distHeight;
+          } else {
+            rawDistance = (distHeight * 0.65) + (distWidth * 0.35);
+          }
 
           // Pitch Angle Compensation (Accelerometer ground-plane sensor fusion)
           if (devicePitchDeg.abs() > 3.0) {
@@ -414,8 +428,8 @@ class OnDeviceObstacleDetector {
             
             if (verticalAngleRad > 0.12) {
               final double groundPlaneDist = cameraHeightMeters / math.tan(verticalAngleRad);
-              if (groundPlaneDist > 0.3 && groundPlaneDist < 8.0) {
-                rawDistance = (rawDistance * 0.65) + (groundPlaneDist * 0.35);
+              if (groundPlaneDist > 0.3 && groundPlaneDist < 8.5) {
+                rawDistance = (rawDistance * 0.60) + (groundPlaneDist * 0.40);
               }
             }
           }
