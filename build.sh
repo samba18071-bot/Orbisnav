@@ -32,6 +32,7 @@ clang++ -std=c++17 -O3 -Wall -Wextra -pthread -dynamiclib \
     "${SCRIPT_DIR}/core/src/navigation_engine.cpp" \
     "${SCRIPT_DIR}/core/src/audio_governor.cpp" \
     "${SCRIPT_DIR}/core/src/power_and_lifecycle.cpp" \
+    "${SCRIPT_DIR}/core/src/wearable_transport.cpp" \
     "${SCRIPT_DIR}/core/src/orbisnav_engine.cpp" \
     "${SCRIPT_DIR}/core/src/orbisnav_api.cpp" \
     -o "${BUILD_DIR}/liborbisnav.dylib"
