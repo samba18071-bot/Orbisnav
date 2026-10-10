@@ -138,6 +138,44 @@ void main() {
       expect(res.distanceMeters, lessThan(0.7));
     });
 
+    test('Object Finder: Matches everyday items via COCO proxies (keys -> remote, wallet -> handbag)', () {
+      finderService.startSearch("keys");
+      final proxyKeys = [
+        DetectedObstacle(
+          label: "remote",
+          confidence: 0.88,
+          xMin: 0.40,
+          yMin: 0.35,
+          xMax: 0.60,
+          yMax: 0.65,
+          distanceMeters: 0.9,
+          ttcSeconds: 3.0,
+          priority: AudioPriority.level2Navigation,
+          clockPosition: "12 o'clock",
+        ),
+      ];
+      final resKeys = finderService.updateVisionCandidates(proxyKeys);
+      expect(resKeys.isFound, isTrue);
+
+      finderService.startSearch("wallet");
+      final proxyWallet = [
+        DetectedObstacle(
+          label: "handbag",
+          confidence: 0.90,
+          xMin: 0.20,
+          yMin: 0.35,
+          xMax: 0.40,
+          yMax: 0.65,
+          distanceMeters: 1.1,
+          ttcSeconds: 3.0,
+          priority: AudioPriority.level2Navigation,
+          clockPosition: "10 o'clock",
+        ),
+      ];
+      final resWallet = finderService.updateVisionCandidates(proxyWallet);
+      expect(resWallet.isFound, isTrue);
+    });
+
     // -------------------------------------------------------------
     // Add-On 3: Tactile Screen Map Explorer
     // -------------------------------------------------------------

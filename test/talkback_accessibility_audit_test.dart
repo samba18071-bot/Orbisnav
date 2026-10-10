@@ -46,6 +46,15 @@ void main() {
       expect(find.text('TRUSTED ANGELS CAREGIVER CALL'), findsOneWidget);
       expect(find.text('DAILY LIVING ASSISTANT'), findsOneWidget);
 
+      // Switch to Tab 3 (Channel 4: Lost Item Sonar)
+      final sonarTabFinder = find.byKey(const Key('mode_tab_sonar'));
+      expect(sonarTabFinder, findsOneWidget);
+      await tester.tap(sonarTabFinder);
+      await tester.pump(const Duration(milliseconds: 400));
+
+      // Verify Lost Item Sonar Radar is rendered
+      expect(find.text('LOST ITEM SONAR RADAR'), findsOneWidget);
+
       // Clean unmount
       await tester.pumpWidget(const SizedBox.shrink());
     });

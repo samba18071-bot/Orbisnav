@@ -136,5 +136,51 @@ void main() {
       expect(second.isIdentified, isTrue);
       expect(second.statusText, contains('Holding'));
     });
+
+    test('Identifies natural language word-based banknotes (e.g. twenty dollar bill, five hundred rupees)', () async {
+      currencyService.setCurrency(CurrencyCode.usd);
+      final usdWordResult = await currencyService.processVisualTokens(
+        detectedTexts: ['There is a twenty dollar bill on the desk.'],
+        confidence: 0.92,
+      );
+      expect(usdWordResult.isIdentified, isTrue);
+      expect(usdWordResult.denomination?.value, equals(20));
+      expect(usdWordResult.denomination?.symbol, equals('\$'));
+
+      currencyService.setCurrency(CurrencyCode.inr);
+      final inrWordResult = await currencyService.processVisualTokens(
+        detectedTexts: ['Banknote: five hundred rupees note in hand.'],
+        confidence: 0.94,
+      );
+      expect(inrWordResult.isIdentified, isTrue);
+      expect(inrWordResult.denomination?.value, equals(500));
+      expect(inrWordResult.denomination?.symbol, equals('₹'));
+    });
+
+    test('Identifies symbol-formatted currency (\$20, ₹500, €50)', () async {
+      currencyService.setCurrency(CurrencyCode.usd);
+      final usdSymbol = await currencyService.processVisualTokens(
+        detectedTexts: ['Found a \$20 banknote.'],
+        confidence: 0.88,
+      );
+      expect(usdSymbol.isIdentified, isTrue);
+      expect(usdSymbol.denomination?.value, equals(20));
+
+      currencyService.setCurrency(CurrencyCode.inr);
+      final inrSymbol = await currencyService.processVisualTokens(
+        detectedTexts: ['Cash in hand: ₹500 currency note.'],
+        confidence: 0.90,
+      );
+      expect(inrSymbol.isIdentified, isTrue);
+      expect(inrSymbol.denomination?.value, equals(500));
+
+      currencyService.setCurrency(CurrencyCode.eur);
+      final eurSymbol = await currencyService.processVisualTokens(
+        detectedTexts: ['Single €50 banknote.'],
+        confidence: 0.89,
+      );
+      expect(eurSymbol.isIdentified, isTrue);
+      expect(eurSymbol.denomination?.value, equals(50));
+    });
   });
 }

@@ -281,7 +281,6 @@ class OnDeviceObstacleDetector {
   final Map<String, DateTime> _announcedObstacles = {};
   final Map<String, double> _announcedDistances = {};
   bool _wasHazardSpoken = false;
-  DateTime? _lastClearSpokenTime;
 
   final StreamController<OnlineDetectionCycleResult> _resultsController =
       StreamController<OnlineDetectionCycleResult>.broadcast();
@@ -694,24 +693,29 @@ class OnDeviceObstacleDetector {
 
     if (cycle.obstacles.isEmpty) {
       if (_wasHazardSpoken) {
-        if (_lastClearSpokenTime == null ||
-            now.difference(_lastClearSpokenTime!).inSeconds >= 5) {
-          _lastClearSpokenTime = now;
-          _wasHazardSpoken = false;
-          _announcedObstacles.clear();
-          _announcedDistances.clear();
-          AudioMutexController().notifyHazardCleared();
-          AudioMutexController().speak(
-            text: "Path clear. Continuing forward.",
-            priority: AudioPriority.level2Navigation,
-            haptic: false,
-          );
-        }
+        _wasHazardSpoken = false;
+        _announcedObstacles.clear();
+        _announcedDistances.clear();
+        AudioMutexController().notifyHazardCleared();
       }
       return;
     }
 
     final topHazard = cycle.highestHazard ?? cycle.obstacles.first;
+
+    // Real-Time Motion Gate: Only speak if dynamic motion or urgent near-field collision
+    final isDynamicMotion = topHazard.motionType == ObjectMotionType.approachingTowardsUser ||
+        topHazard.motionType == ObjectMotionType.crossingLeftToRight ||
+        topHazard.motionType == ObjectMotionType.crossingRightToLeft ||
+        topHazard.motionType == ObjectMotionType.overheadHazard;
+    final isUrgentNearCollision = topHazard.distanceMeters <= 1.2 &&
+        (topHazard.clockPosition == "12 o'clock" || topHazard.clockPosition == "11 o'clock" || topHazard.clockPosition == "1 o'clock");
+
+    // Suppress speaking stationary background objects (e.g. bed, table, chair, wall at distance)
+    if (!isDynamicMotion && !isUrgentNearCollision) {
+      return;
+    }
+
     final key = "${topHazard.label}_${topHazard.clockPosition}";
     final lastSpoken = _announcedObstacles[key];
     final lastDist = _announcedDistances[key];
@@ -724,16 +728,12 @@ class OnDeviceObstacleDetector {
       final elapsedSec = now.difference(lastSpoken).inSeconds;
       final distDelta = (lastDist != null) ? (lastDist - topHazard.distanceMeters).abs() : 99.0;
 
-      // Critical hazards (<1.2m) speak if closer by 0.6m or 6s elapsed
-      if (topHazard.priority == AudioPriority.level0Critical && (elapsedSec >= 6 || distDelta >= 0.6)) {
+      // Critical hazards (<1.2m) speak if closer by 0.6m or 8s elapsed
+      if (topHazard.priority == AudioPriority.level0Critical && (elapsedSec >= 8 || distDelta >= 0.6)) {
         shouldSpeak = true;
       } 
-      // Safety items speak if closer by >= 1.2m or 12s cooldown elapsed
-      else if (topHazard.priority == AudioPriority.level1Safety && (elapsedSec >= 12 || distDelta >= 1.2)) {
-        shouldSpeak = true;
-      } 
-      // Context items speak only after 18s
-      else if (elapsedSec >= 18) {
+      // Safety moving items speak if closer by >= 1.2m or 15s cooldown elapsed
+      else if (topHazard.priority == AudioPriority.level1Safety && (elapsedSec >= 15 || distDelta >= 1.2)) {
         shouldSpeak = true;
       }
     }
@@ -748,7 +748,7 @@ class OnDeviceObstacleDetector {
           : topHazard.speechAnnouncement;
 
       // Real-Time Optimal Path Navigation Voice Integration
-      if (cycle.optimalPath.isPathBlocked && topHazard.distanceMeters < 3.0) {
+      if (cycle.optimalPath.isPathBlocked && topHazard.distanceMeters < 2.5) {
         speechText = "$speechText ${cycle.optimalPath.voiceInstruction}";
       }
 

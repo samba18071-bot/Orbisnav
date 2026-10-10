@@ -477,6 +477,17 @@ class OnlineVisionStream {
     final now = DateTime.now();
 
     if (hazard != null && hazard.label != "Path Clear") {
+      final isDynamicMotion = hazard.motionType == ObjectMotionType.approachingTowardsUser ||
+          hazard.motionType == ObjectMotionType.crossingLeftToRight ||
+          hazard.motionType == ObjectMotionType.crossingRightToLeft ||
+          hazard.motionType == ObjectMotionType.overheadHazard;
+      final isUrgentNearCollision = hazard.distanceMeters <= 1.2 &&
+          (hazard.clockPosition == "12 o'clock" || hazard.clockPosition == "11 o'clock" || hazard.clockPosition == "1 o'clock");
+
+      if (!isDynamicMotion && !isUrgentNearCollision) {
+        return;
+      }
+
       final labelKey = "${hazard.label.toLowerCase().trim()}_${hazard.clockPosition.toLowerCase().trim()}";
       final lastSpoken = _announcedObstacles[labelKey];
       final lastDist = _announcedDistances[labelKey] ?? 99.0;

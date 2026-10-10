@@ -89,9 +89,7 @@ class ObjectFinderSonarService {
     double bestMatchScore = 0.0;
 
     for (final item in detections) {
-      final labelLower = item.label.toLowerCase();
-      if (labelLower.contains(_activeTargetLabel) ||
-          _activeTargetLabel.contains(labelLower)) {
+      if (_isMatching(item.label, _activeTargetLabel)) {
         if (item.confidence > bestMatchScore) {
           bestMatchScore = item.confidence;
           matchedItem = item;
@@ -158,6 +156,43 @@ class ObjectFinderSonarService {
     }
 
     return _currentState;
+  }
+
+  bool _isMatching(String itemLabel, String target) {
+    final i = itemLabel.toLowerCase().trim();
+    final t = target.toLowerCase().trim();
+    if (i == t || i.contains(t) || t.contains(i)) return true;
+
+    // Synonyms and proxy object matches for real-time edge detection
+    const proxies = <String, List<String>>{
+      'keys': ['keys', 'key', 'scissors', 'remote', 'mouse', 'cell phone'],
+      'key': ['keys', 'key', 'scissors', 'remote', 'mouse', 'cell phone'],
+      'wallet': ['wallet', 'handbag', 'book', 'cell phone', 'purse'],
+      'purse': ['wallet', 'handbag', 'purse', 'backpack'],
+      'white cane': ['white cane', 'cane', 'umbrella', 'stick', 'baseball bat'],
+      'cane': ['white cane', 'cane', 'umbrella', 'stick', 'baseball bat'],
+      'glasses': ['glasses', 'spectacles', 'remote', 'cell phone'],
+      'spectacles': ['glasses', 'spectacles', 'remote', 'cell phone'],
+      'water bottle': ['water bottle', 'bottle', 'cup', 'glass'],
+      'bottle': ['water bottle', 'bottle', 'cup', 'glass'],
+      'cup': ['cup', 'bottle', 'mug', 'glass'],
+      'mug': ['cup', 'bottle', 'mug'],
+      'phone': ['cell phone', 'phone', 'telephone'],
+      'cell phone': ['cell phone', 'phone', 'telephone'],
+      'laptop': ['laptop', 'tv', 'keyboard', 'computer'],
+      'backpack': ['backpack', 'handbag', 'suitcase', 'bag'],
+      'bag': ['backpack', 'handbag', 'suitcase', 'bag'],
+      'chair': ['chair', 'couch', 'bench'],
+    };
+
+    for (final entry in proxies.entries) {
+      if (t.contains(entry.key) || entry.key.contains(t)) {
+        if (entry.value.any((syn) => i.contains(syn) || syn.contains(i))) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   void dispose() {

@@ -114,7 +114,7 @@ class CloudAIVisionService {
     Uint8List jpegBytes, {
     List<DetectedObstacle>? currentObstacles,
     double devicePitchDeg = 0.0,
-    bool speakResult = true,
+    bool speakResult = false,
     bool force = false,
   }) async {
     final now = DateTime.now();
@@ -299,11 +299,13 @@ class CloudAIVisionService {
     );
 
     const promptText = """
-You are an assistive vision navigation guide for a visually impaired user.
-Analyze this image and explain the real-time situation clearly in 2-3 direct sentences:
-1. State the immediate environment context (e.g. 'You are in an indoor office workspace', 'You are on an outdoor sidewalk').
-2. Explain what is directly ahead at 12 o'clock, what is on the left (10 o'clock), and what is on the right (2 o'clock).
-3. State whether the pathway ahead is clear or blocked, and give a 1-sentence recommended action.
+You are an assistive vision navigation and reading guide for a visually impaired user.
+Analyze this camera image clearly in 2-3 direct sentences:
+1. State the immediate environment context and hazards ahead, left, or right.
+2. If there is visible text, signage, or a document in view, read and transcribe the text clearly.
+3. If there is a currency banknote/bill in view, state the exact currency and denomination (e.g. '20 US Dollars bill', '500 Indian Rupees note', '50 Euros bill').
+4. If there is a product or barcode, describe the product name and brand.
+5. State whether the pathway ahead is clear or blocked, and give a recommended action.
 
 Keep tone calm, direct, and conversational. Do not use asterisks, markdown, or bullet points.
 """;

@@ -431,30 +431,100 @@ class CurrencyRecognitionService {
   }
 
   BanknoteDenomination? _matchDenomination(List<String> tokens, CurrencyCode currency) {
+    final allTextLower = tokens.join(' ').toLowerCase();
+
+    // Check for explicit currency conflicts if a specific currency is active
+    final conflictingTerms = <CurrencyCode, List<String>>{
+      CurrencyCode.usd: ['rupee', 'rupees', '₹', 'euro', 'euros', '€', 'pound', 'pounds', '£', 'yen', '¥'],
+      CurrencyCode.inr: ['dollar', 'dollars', '\$', 'euro', 'euros', '€', 'pound', 'pounds', '£', 'yen', '¥'],
+      CurrencyCode.eur: ['rupee', 'rupees', '₹', 'dollar', 'dollars', '\$', 'pound', 'pounds', '£', 'yen', '¥'],
+      CurrencyCode.gbp: ['rupee', 'rupees', '₹', 'dollar', 'dollars', '\$', 'euro', 'euros', '€', 'yen', '¥'],
+      CurrencyCode.jpy: ['rupee', 'rupees', '₹', 'dollar', 'dollars', '\$', 'euro', 'euros', '€', 'pound', 'pounds', '£'],
+      CurrencyCode.cad: ['rupee', 'rupees', '₹', 'euro', 'euros', '€', 'pound', 'pounds', '£', 'yen', '¥'],
+      CurrencyCode.aud: ['rupee', 'rupees', '₹', 'euro', 'euros', '€', 'pound', 'pounds', '£', 'yen', '¥'],
+    };
+
+    final conflicts = conflictingTerms[currency] ?? [];
+    if (conflicts.any((c) => allTextLower.contains(c))) {
+      return null;
+    }
+
+    // Sort descending by denomination so 500 is tested before 50, 100 before 10
     final currencyNotes = BanknoteDenomination.supportedBanknotes
         .where((n) => n.currency == currency)
-        .toList();
+        .toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
 
-    final normalized = tokens.map((t) => t.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '')).toList();
-
+    // 1. High priority: check explicit currency phrase matches with non-digit lookahead
     for (final note in currencyNotes) {
-      final valStr = note.value.toString();
-      for (final token in normalized) {
-        if (token == valStr ||
-            token.contains('${valStr}dollars') ||
-            token.contains('${valStr}rupees') ||
-            token.contains('${valStr}euros') ||
-            token.contains('${valStr}pounds') ||
-            token.contains('${valStr}yen')) {
-          return note;
+      final v = note.value.toString();
+      final phraseRegex = RegExp(
+        '(?:' +
+        r'\$' + v + r'(?!\d)|' +
+        '₹' + v + r'(?!\d)|' +
+        '€' + v + r'(?!\d)|' +
+        '£' + v + r'(?!\d)|' +
+        '¥' + v + r'(?!\d)|' +
+        r'\b' + v + r'\s*(?:dollars?|rupees?|euros?|pounds?|yen)\b' +
+        ')',
+      );
+      if (phraseRegex.hasMatch(allTextLower)) {
+        return note;
+      }
+    }
+
+    // 2. Word-to-number dictionary with regex boundaries (checked longest phrase first)
+    final wordNumbers = [
+      MapEntry(RegExp(r'\bten thousand\b'), 10000),
+      MapEntry(RegExp(r'\bfive thousand\b'), 5000),
+      MapEntry(RegExp(r'\bone thousand\b'), 1000),
+      MapEntry(RegExp(r'\bthousand\b'), 1000),
+      MapEntry(RegExp(r'\bfive hundred\b'), 500),
+      MapEntry(RegExp(r'\btwo hundred\b'), 200),
+      MapEntry(RegExp(r'\bone hundred\b'), 100),
+      MapEntry(RegExp(r'\bhundred\b'), 100),
+      MapEntry(RegExp(r'\bfifty\b'), 50),
+      MapEntry(RegExp(r'\btwenty\b'), 20),
+      MapEntry(RegExp(r'\bten\b'), 10),
+      MapEntry(RegExp(r'\bfive\b'), 5),
+      MapEntry(RegExp(r'\bone\b'), 1),
+    ];
+
+    for (final entry in wordNumbers) {
+      if (entry.key.hasMatch(allTextLower)) {
+        for (final note in currencyNotes) {
+          if (note.value == entry.value) {
+            return note;
+          }
         }
       }
     }
 
-    // Secondary scan: check raw numeric tokens
-    for (final token in normalized) {
-      for (final note in currencyNotes) {
-        if (token == note.value.toString()) {
+    // 3. Whole integer digit matching (avoiding decimal cents like 1.60)
+    final wholeIntRegex = RegExp(r'(?<!\.)\b(\d+)(?!\.\d)');
+    final matches = wholeIntRegex.allMatches(allTextLower);
+    final detectedVals = matches.map((m) => int.tryParse(m.group(1)!)).whereType<int>().toSet();
+    for (final note in currencyNotes) {
+      if (detectedVals.contains(note.value)) {
+        return note;
+      }
+    }
+
+    // 4. Normalized tokens fallback for compact OCR output
+    final normalized = tokens.map((t) => t.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '')).toList();
+    for (final note in currencyNotes) {
+      final valStr = note.value.toString();
+      for (final token in normalized) {
+        if (token == valStr ||
+            token.contains('${valStr}dollar') ||
+            token.contains('${valStr}dollars') ||
+            token.contains('${valStr}rupee') ||
+            token.contains('${valStr}rupees') ||
+            token.contains('${valStr}euro') ||
+            token.contains('${valStr}euros') ||
+            token.contains('${valStr}pound') ||
+            token.contains('${valStr}pounds') ||
+            token.contains('${valStr}yen')) {
           return note;
         }
       }

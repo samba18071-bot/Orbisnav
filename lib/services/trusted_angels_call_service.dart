@@ -78,6 +78,9 @@ class TrustedAngelsCallService {
 
   TrustedAngelCallSession _currentSession = TrustedAngelCallSession.idle();
   TrustedAngelCallSession get currentSession => _currentSession;
+  bool get isCallActive =>
+      _currentSession.status == TrustedAngelCallStatus.connected ||
+      _currentSession.status == TrustedAngelCallStatus.dialing;
 
   Timer? _callTimer;
   int _elapsedSeconds = 0;
