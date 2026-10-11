@@ -16,7 +16,7 @@ void main() {
       // Verify 3 Top-Level Navigation Modes
       expect(find.text('Safety HUD'), findsOneWidget);
       expect(find.text('Navigation'), findsOneWidget);
-      expect(find.text('Living & Care'), findsOneWidget);
+      expect(find.text('Doc Scan'), findsOneWidget);
 
       // Clean unmount
       await tester.pumpWidget(const SizedBox.shrink());

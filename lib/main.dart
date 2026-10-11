@@ -828,7 +828,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     final channelNames = [
       "Safety Hazard HUD",
       "Pedestrian and Indoor Navigation",
-      "Smart Reader Seeing AI",
+      "Doc Scan",
       "Lost Item Sonar Radar",
     ];
 
@@ -956,11 +956,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       }
 
       // -------------------------------------------------------------
-      // Microsoft Seeing AI: Color Channel
+      // Microsoft Seeing AI: Dominant Color & Ambient Light Channels
       // -------------------------------------------------------------
+      final colorName = _estimateDominantColor(bytes);
+      _currentColorName = colorName;
+
+      final lumaPercent = _estimateLightLevel(bytes);
+      _currentLightLevelPercent = lumaPercent;
+
       if (_readerScanMode == 'color') {
-        final colorName = _estimateDominantColor(bytes);
-        _currentColorName = colorName;
         final colorMsg = "Color: $colorName";
         final isNewColor = colorMsg != _lastAutoSpokenColor ||
             _lastAutoSpokenColorTime == null ||
@@ -979,12 +983,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         return;
       }
 
-      // -------------------------------------------------------------
-      // Microsoft Seeing AI: Light Channel
-      // -------------------------------------------------------------
       if (_readerScanMode == 'light') {
-        final lumaPercent = _estimateLightLevel(bytes);
-        _currentLightLevelPercent = lumaPercent;
         String desc = "Good indoor illumination";
         if (lumaPercent > 80) {
           desc = "Very bright direct light";
@@ -1010,9 +1009,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         return;
       }
 
-      // -------------------------------------------------------------
-      // Microsoft Seeing AI: Scene Channel
-      // -------------------------------------------------------------
       if (_readerScanMode == 'scene') {
         final caption = _captioningService.generateCaption(
           obstacles: _activeObstacles,
@@ -1201,6 +1197,30 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               setState(() {
                 _lastReaderScannedSummary = detectedText;
                 _currentReadingSession = session;
+              });
+            }
+          }
+        } else if (_readerScanMode == 'all') {
+          // Channel 3 Doc Scan: Autonomous Seeing AI ambient scene fallback
+          final caption = _captioningService.generateCaption(
+            obstacles: _activeObstacles,
+            phonePitchDeg: _pitchDeg,
+            phoneRollDeg: _rollDeg,
+          );
+          final sceneMsg = caption.spokenCaption;
+          final isNewScene = sceneMsg != _lastAutoSpokenScene ||
+              _lastAutoSpokenSceneTime == null ||
+              now.difference(_lastAutoSpokenSceneTime!).inSeconds >= 8;
+          if (isNewScene && sceneMsg.isNotEmpty) {
+            _lastAutoSpokenScene = sceneMsg;
+            _lastAutoSpokenSceneTime = now;
+            _audioMutex.speak(
+              text: sceneMsg,
+              priority: AudioPriority.level3Context,
+            );
+            if (mounted) {
+              setState(() {
+                _lastReaderScannedSummary = sceneMsg;
               });
             }
           }
@@ -1852,7 +1872,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                                 : _activeNavTab == 1
                                     ? "CHANNEL 2 OF 4: NAVIGATION"
                                     : _activeNavTab == 2
-                                        ? "CHANNEL 3 OF 4: SMART READER"
+                                        ? "CHANNEL 3 OF 4: DOC SCAN"
                                         : "CHANNEL 4 OF 4: LOST ITEM SONAR",
                             style: TextStyle(
                               fontSize: 11,
@@ -4540,7 +4560,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                         const SizedBox(width: 3),
                         Flexible(
                           child: Text(
-                            "Living & Care",
+                            "Doc Scan",
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: 10,
@@ -6007,6 +6027,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 4),
                       children: [
+                        _buildSeeingAiModePill("Auto Doc Scan", "all", Icons.auto_awesome),
                         _buildSeeingAiModePill("Short Text", "text", Icons.short_text),
                         _buildSeeingAiModePill("Document", "document", Icons.document_scanner),
                         _buildSeeingAiModePill("Product", "product", Icons.qr_code_scanner),
@@ -6038,8 +6059,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         onTap: () {
           setState(() => _readerScanMode = modeKey);
           HapticFeedback.selectionClick();
+          final announcement = modeKey == 'all'
+              ? "Auto Doc Scan active. Automatically recognizing documents, text, currency, products, and scene."
+              : "$label mode active. Point camera at subject for instant recognition.";
           _audioMutex.speak(
-            text: "$label mode active. Point camera at subject for instant recognition.",
+            text: announcement,
             priority: AudioPriority.level3Context,
             force: true,
           );
