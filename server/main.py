@@ -19,10 +19,8 @@ Features:
 """
 
 import asyncio
-import io
 import json
 import logging
-import math
 import os
 import sys
 import time
@@ -30,10 +28,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException, Header, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
 from ultralytics import YOLO
 
 # ==============================================================================
@@ -479,7 +476,6 @@ async def websocket_vision_stream(
 
     # Async Frame Processing Worker
     async def worker():
-        nonlocal is_active
         while is_active:
             try:
                 frame_bytes = await frame_queue.get()
@@ -603,32 +599,59 @@ async def detect_objects(
 ):
     """Fallback HTTP REST endpoint for single-frame inference."""
     try:
-        frame_bytes = await request.body()
+        content_type = request.headers.get("content-type", "")
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            file = form.get("file") or form.get("image")
+            frame_bytes = await file.read() if file else b""
+        else:
+            frame_bytes = await request.body()
+
         if not frame_bytes:
-            return {"status": "error", "message": "Empty frame body", "detections": []}
+            return {"status": "error", "message": "Empty frame body", "detections": [], "obstacles": []}
 
         start_time = time.perf_counter()
         np_arr = np.frombuffer(frame_bytes, np.uint8)
         img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
         if img is None:
-            return {"status": "error", "message": "Failed to decode image", "detections": []}
+            return {"status": "error", "message": "Failed to decode image", "detections": [], "obstacles": []}
 
         detections = analyze_frame(img)
         processing_time_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
+
+        # Build obstacles list for legacy client compatibility
+        obstacles = []
+        for d in detections:
+            bbox = d.get("bbox", [0.0, 0.0, 0.0, 0.0])
+            prio = 0 if d.get("is_critical") else (1 if d.get("distance_meters", 10.0) < 2.0 else 2)
+            obstacles.append({
+                "label": d.get("label", "Obstacle"),
+                "confidence": d.get("confidence", 0.8),
+                "x_min": bbox[0],
+                "y_min": bbox[1],
+                "x_max": bbox[2],
+                "y_max": bbox[3],
+                "distance_m": d.get("distance_meters", 2.0),
+                "clock_zone": d.get("clock_zone", "12 o'clock"),
+                "priority": prio,
+            })
 
         return {
             "status": "ok",
             "processing_time_ms": processing_time_ms,
             "timestamp": time.time(),
-            "detections": detections
+            "detections": detections,
+            "obstacles": obstacles,
         }
     except Exception as e:
         logger.error(f"Error in /detect: {e}", exc_info=True)
-        return {"status": "error", "message": str(e), "detections": []}
+        return {"status": "error", "message": str(e), "detections": [], "obstacles": []}
+
 
 # Lazy PaddleOCR instance for Signboard reading
 _ocr_reader = None
+
 
 def get_ocr_engine():
     global _ocr_reader
@@ -641,11 +664,21 @@ def get_ocr_engine():
             logger.warning(f"PaddleOCR load warning: {e}")
     return _ocr_reader
 
+
 @app.post("/detect-board")
 async def detect_nameboard(request: Request, query: str = ""):
     """Analyzes a camera frame to locate signboards and matches them against target destination."""
     try:
-        frame_bytes = await request.body()
+        content_type = request.headers.get("content-type", "")
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            file = form.get("file") or form.get("image")
+            frame_bytes = await file.read() if file else b""
+            if not query and "query" in form:
+                query = str(form.get("query") or "")
+        else:
+            frame_bytes = await request.body()
+
         if not frame_bytes:
             return {"status": "error", "message": "Empty frame body", "boards": []}
 
@@ -658,44 +691,65 @@ async def detect_nameboard(request: Request, query: str = ""):
         h, w = img.shape[:2]
         ocr = get_ocr_engine()
         boards = []
+        target_query = query.strip().lower() if query else ""
 
         if ocr is not None:
-            ocr_res = ocr.ocr(img, cls=False)
-            if ocr_res and len(ocr_res) > 0 and ocr_res[0]:
-                for line in ocr_res[0]:
-                    coords = line[0]
-                    text, conf = line[1]
-                    xs = [pt[0] for pt in coords]
-                    ys = [pt[1] for pt in coords]
-                    x_min, x_max = min(xs) / w, max(xs) / w
-                    y_min, y_max = min(ys) / h, max(ys) / h
-                    x_center = (x_min + x_max) / 2.0
-                    clock = centroid_to_clock_zone(x_center)
-                    box_w = x_max - x_min
-                    dist_m = round(float(np.clip((FOCAL_X * 1.20) / max(0.02, box_w), 0.5, 20.0)), 1)
+            try:
+                ocr_res = ocr.ocr(img, cls=False)
+                if ocr_res and len(ocr_res) > 0 and ocr_res[0]:
+                    for line in ocr_res[0]:
+                        coords = line[0]
+                        text, conf = line[1]
+                        xs = [pt[0] for pt in coords]
+                        ys = [pt[1] for pt in coords]
+                        x_min = max(0.0, min(1.0, min(xs) / max(1, w)))
+                        x_max = max(0.0, min(1.0, max(xs) / max(1, w)))
+                        y_min = max(0.0, min(1.0, min(ys) / max(1, h)))
+                        y_max = max(0.0, min(1.0, max(ys) / max(1, h)))
+                        x_center = (x_min + x_max) / 2.0
+                        clock = centroid_to_clock_zone(x_center)
+                        box_w = max(0.01, x_max - x_min)
+                        dist_m = round(float(np.clip((FOCAL_X * 1.20) / max(0.02, box_w), 0.5, 20.0)), 1)
 
-                    boards.append({
-                        "text": text,
-                        "confidence": round(float(conf), 2),
-                        "clock_zone": clock,
-                        "distance_meters": dist_m,
-                        "bbox": [round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3)]
-                    })
+                        board_entry = {
+                            "text": text,
+                            "confidence": round(float(conf), 2),
+                            "clock_zone": clock,
+                            "distance_meters": dist_m,
+                            "bbox": [round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3)],
+                        }
+                        if target_query:
+                            board_entry["matched"] = target_query in text.lower()
+                        boards.append(board_entry)
+            except Exception as ocr_err:
+                logger.warning(f"PaddleOCR processing error: {ocr_err}")
+
+        if target_query and boards:
+            boards.sort(key=lambda b: (b.get("matched", False), b.get("confidence", 0.0)), reverse=True)
 
         return {
             "status": "ok",
             "boards": boards,
-            "processing_time_ms": round((time.perf_counter() - start_time) * 1000.0, 2)
+            "total_detected": len(boards),
+            "processing_time_ms": round((time.perf_counter() - start_time) * 1000.0, 2),
         }
     except Exception as e:
         logger.error(f"Error in /detect-board: {e}", exc_info=True)
         return {"status": "error", "message": str(e), "boards": []}
 
+
 @app.post("/analyze-scene")
 async def analyze_scene_endpoint(request: Request):
     """Analyzes a camera frame to generate rich contextual scene descriptions and moving object analysis."""
     try:
-        frame_bytes = await request.body()
+        content_type = request.headers.get("content-type", "")
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            file = form.get("file") or form.get("image")
+            frame_bytes = await file.read() if file else b""
+        else:
+            frame_bytes = await request.body()
+
         if not frame_bytes:
             return {"status": "error", "description": "Empty image frame received"}
 
@@ -706,14 +760,18 @@ async def analyze_scene_endpoint(request: Request):
 
         detections = analyze_frame(img)
         labels = [d["label"] for d in detections if d["label"] != "Path Clear"]
-        
+
         if labels:
-            items_str = ", ".join(labels[:4])
+            unique_labels = list(dict.fromkeys(labels))
+            items_str = ", ".join(unique_labels[:4])
             scene_summary = f"Looking ahead. Identified {items_str}. "
-            moving = [d for d in detections if d.get("is_critical") or d["label"] in ["person", "car", "bicycle", "motorcycle"]]
+            moving = [
+                d for d in detections
+                if d.get("is_critical") or d["label"].lower() in ["person", "car", "bicycle", "motorcycle", "bus", "truck"]
+            ]
             if moving:
                 m_item = moving[0]
-                scene_summary += f"{m_item['label'].capitalize()} located at {m_item['clock_zone']}, {m_item['distance_meters']} meters away."
+                scene_summary += f"{m_item['label']} located at {m_item['clock_zone']}, {m_item['distance_meters']} meters away."
             else:
                 scene_summary += "Path directly ahead appears clear."
         else:
@@ -724,7 +782,7 @@ async def analyze_scene_endpoint(request: Request):
             "summary": scene_summary,
             "description": scene_summary,
             "detections": detections,
-            "total_objects": len(detections)
+            "total_objects": len(detections),
         }
     except Exception as e:
         logger.error(f"Error in /analyze-scene: {e}", exc_info=True)
