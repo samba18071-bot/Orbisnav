@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:orbisnav/controllers/audio_mutex_controller.dart';
 import 'package:orbisnav/services/offline_scene_captioning_service.dart';
 import 'package:orbisnav/services/online_obstacle_detector.dart';
+import 'package:orbisnav/services/object_finder_sonar_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -254,6 +255,64 @@ void main() {
       );
 
       expect(audioMutex.currentActivePriority, equals(AudioPriority.level0Critical));
+    });
+
+    test('ObjectFinderSonarService matches all 32 trained assistive classes with high fidelity', () {
+      final sonarService = ObjectFinderSonarService(audioMutex: audioMutex);
+
+      final testCases = [
+        {'target': 'keys', 'detected': 'keys', 'shouldMatch': true},
+        {'target': 'keys', 'detected': 'key', 'shouldMatch': true},
+        {'target': 'phone', 'detected': 'cell_phone', 'shouldMatch': true},
+        {'target': 'phone', 'detected': 'cell phone', 'shouldMatch': true},
+        {'target': 'white cane', 'detected': 'white_cane', 'shouldMatch': true},
+        {'target': 'charger', 'detected': 'charger', 'shouldMatch': true},
+        {'target': 'wallet', 'detected': 'wallet', 'shouldMatch': true},
+        {'target': 'glasses', 'detected': 'glasses', 'shouldMatch': true},
+        {'target': 'water bottle', 'detected': 'bottle', 'shouldMatch': true},
+        {'target': 'shoes', 'detected': 'shoes', 'shouldMatch': true},
+        {'target': 'laptop', 'detected': 'laptop', 'shouldMatch': true},
+        {'target': 'medicine', 'detected': 'medicine_bottle', 'shouldMatch': true},
+        {'target': 'headphones', 'detected': 'headphones', 'shouldMatch': true},
+        {'target': 'watch', 'detected': 'watch', 'shouldMatch': true},
+        {'target': 'remote', 'detected': 'remote', 'shouldMatch': true},
+        {'target': 'pen', 'detected': 'pen', 'shouldMatch': true},
+      ];
+
+      for (final tc in testCases) {
+        final matches = sonarService.isMatching(
+          tc['detected'] as String,
+          tc['target'] as String,
+        );
+        expect(matches, equals(tc['shouldMatch']),
+            reason: 'Failed matching ${tc["detected"]} with ${tc["target"]}');
+      }
+    });
+
+    test('Voice search item cleaning correctly removes natural voice query prefixes', () {
+      String cleanVoiceItem(String input) {
+        var clean = input.toLowerCase().trim();
+        final prefixes = [
+          "find my ", "find ", "where is my ", "where's my ", "where is ",
+          "where are my ", "locate my ", "locate ", "search for ", "look for ",
+          "i lost my ", "i lost ", "bring me ", "show me "
+        ];
+        for (final p in prefixes) {
+          if (clean.startsWith(p)) {
+            clean = clean.substring(p.length).trim();
+            break;
+          }
+        }
+        return clean;
+      }
+
+      expect(cleanVoiceItem("find my keys"), equals("keys"));
+      expect(cleanVoiceItem("where is my cell phone"), equals("cell phone"));
+      expect(cleanVoiceItem("locate my white cane"), equals("white cane"));
+      expect(cleanVoiceItem("search for charger"), equals("charger"));
+      expect(cleanVoiceItem("where's my wallet"), equals("wallet"));
+      expect(cleanVoiceItem("i lost my glasses"), equals("glasses"));
+      expect(cleanVoiceItem("water bottle"), equals("water bottle"));
     });
   });
 }

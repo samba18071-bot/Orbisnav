@@ -278,19 +278,26 @@ class OnDeviceObstacleDetector {
     "iron": _ObjectPrior(0.16, 0.28, AudioPriority.level2Navigation, "Ironbox"),
     "keys": _ObjectPrior(0.04, 0.09, AudioPriority.level2Navigation, "Keys"),
     "white cane": _ObjectPrior(1.20, 0.05, AudioPriority.level1Safety, "White cane"),
+    "white_cane": _ObjectPrior(1.20, 0.05, AudioPriority.level1Safety, "White cane"),
     "cane": _ObjectPrior(1.20, 0.05, AudioPriority.level1Safety, "White cane"),
     "wallet": _ObjectPrior(0.10, 0.12, AudioPriority.level2Navigation, "Wallet"),
     "glasses": _ObjectPrior(0.05, 0.14, AudioPriority.level2Navigation, "Glasses"),
     "spectacles": _ObjectPrior(0.05, 0.14, AudioPriority.level2Navigation, "Spectacles"),
+    "cell_phone": _ObjectPrior(0.15, 0.08, AudioPriority.level3Context, "Cell phone"),
     "charger": _ObjectPrior(0.08, 0.08, AudioPriority.level2Navigation, "Charger"),
     "shoes": _ObjectPrior(0.14, 0.30, AudioPriority.level2Navigation, "Shoes"),
     "shoe": _ObjectPrior(0.14, 0.30, AudioPriority.level2Navigation, "Shoes"),
     "medicine": _ObjectPrior(0.12, 0.06, AudioPriority.level2Navigation, "Medicine"),
+    "medicine_bottle": _ObjectPrior(0.12, 0.06, AudioPriority.level2Navigation, "Medicine bottle"),
     "headphones": _ObjectPrior(0.18, 0.18, AudioPriority.level2Navigation, "Headphones"),
     "watch": _ObjectPrior(0.04, 0.04, AudioPriority.level3Context, "Watch"),
     "pen": _ObjectPrior(0.14, 0.01, AudioPriority.level3Context, "Pen"),
     "fan": _ObjectPrior(0.45, 0.45, AudioPriority.level1Safety, "Fan"),
     "plate": _ObjectPrior(0.03, 0.25, AudioPriority.level3Context, "Plate"),
+    "signboard": _ObjectPrior(0.60, 0.80, AudioPriority.level1Safety, "Signboard"),
+    "vehicle": _ObjectPrior(1.50, 1.80, AudioPriority.level0Critical, "Vehicle"),
+    "pole": _ObjectPrior(2.80, 0.25, AudioPriority.level0Critical, "Pole"),
+    "trash_bin": _ObjectPrior(0.75, 0.45, AudioPriority.level1Safety, "Trash bin"),
   };
 
   // Multi-frame temporal persistence to suppress 1-frame transient glitches
@@ -358,6 +365,7 @@ class OnDeviceObstacleDetector {
   Future<OnlineDetectionCycleResult> processFrameBytes(
     Uint8List jpegBytes, {
     double devicePitchDeg = 0.0,
+    bool speakGovernance = true,
   }) async {
     if (!_isEnabled || _isProcessing || !_isInitialized) {
       return OnlineDetectionCycleResult(
@@ -524,7 +532,9 @@ class OnDeviceObstacleDetector {
       _resultsController.add(cycleResult);
 
       // Enforce Speak-Once Audio Mutex Governance
-      _enforceSpeechGovernance(cycleResult);
+      if (speakGovernance) {
+        _enforceSpeechGovernance(cycleResult);
+      }
 
       return cycleResult;
     } catch (e) {

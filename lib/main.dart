@@ -618,6 +618,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       final image = await _cameraController!.takePicture();
       final bytes = await image.readAsBytes();
 
+      // Immediately abort if user switched away from Channel 0
+      if (_activeNavTab != 0) return;
+
       // Immediately delete temporary captured photo to prevent storage/cache accumulation
       try {
         final f = File(image.path);
@@ -826,6 +829,12 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     // 2. Hard stop ALL other channels completely
     _stopAllChannelsExcept(newChannel);
 
+    // 3. Clear all camera frame locks so the newly activated channel starts immediately without deadlock
+    _isProcessingFrame = false;
+    _isProcessingSonarFrame = false;
+    _isReaderScanning = false;
+    _isAutoScanningReader = false;
+
     setState(() {
       _activeNavTab = newChannel;
     });
@@ -922,16 +931,19 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     try {
       final img = await _cameraController!.takePicture();
       final bytes = await img.readAsBytes();
+      if (_activeNavTab != 2) return;
       try {
         final f = File(img.path);
         if (await f.exists()) await f.delete();
       } catch (_) {}
 
-      // 1. Run real-time on-device neural detector
+      // 1. Run real-time on-device neural detector without hazard speech governance
       await _onDeviceDetector.processFrameBytes(
         bytes,
         devicePitchDeg: _pitchDeg,
+        speakGovernance: false,
       );
+      if (_activeNavTab != 2) return;
 
       final now = DateTime.now();
 
@@ -1388,6 +1400,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     try {
       final img = await _cameraController!.takePicture();
       final bytes = await img.readAsBytes();
+      if (_activeNavTab != 3) return;
       try {
         final f = File(img.path);
         if (await f.exists()) await f.delete();
@@ -1396,11 +1409,13 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       // Ensure detector is enabled for real-time edge inference
       _onDeviceDetector.setEnabled(true);
 
-      // Run on-device detector to identify candidate objects in the frame
+      // Run on-device detector without hazard speech governance (Sonar drives its own audio cues)
       final result = await _onDeviceDetector.processFrameBytes(
         bytes,
         devicePitchDeg: _pitchDeg,
+        speakGovernance: false,
       );
+      if (_activeNavTab != 3) return;
 
       final candidateObstacles = List<DetectedObstacle>.from(result.obstacles);
       if (candidateObstacles.isEmpty && _activeObstacles.isNotEmpty) {
@@ -1474,134 +1489,55 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     setState(() {});
   }
 
-  void _showVoiceItemSearchDialog() {
-    _voiceSonarItemController.clear();
-    HapticFeedback.mediumImpact();
-    _audioMutex.speak(
-      text: "Voice item search active. Speak or select the item to find.",
+  Future<void> _startVoiceItemSearch() async {
+    HapticFeedback.heavyImpact();
+    await _audioMutex.speak(
+      text: "Listening. Speak the item you want to find.",
       priority: AudioPriority.level2Navigation,
       channelIndex: 3,
       force: true,
+      haptic: true,
     );
 
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF131B2A),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: Color(0xFFFF0055), width: 1.5),
-        ),
-        title: const Row(
-          children: [
-            Icon(Icons.mic, color: Color(0xFFFF0055)),
-            SizedBox(width: 8),
-            Text(
-              "Voice Item Search",
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              "Speak or type what you misplaced:",
-              style: TextStyle(fontSize: 12, color: Colors.white70),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _voiceSonarItemController,
-              autofocus: true,
-              style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                hintText: "e.g. keys, phone, cane, wallet",
-                hintStyle: const TextStyle(color: Colors.white38),
-                filled: true,
-                fillColor: const Color(0xFF0A0E17),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: const BorderSide(color: Color(0xFFFF0055)),
-                ),
-                prefixIcon: const Icon(Icons.search, color: Color(0xFFFF0055)),
-              ),
-              onSubmitted: (value) {
-                if (value.trim().isNotEmpty) {
-                  Navigator.of(ctx).pop();
-                  _startSonarSearchFor(value.trim());
-                }
-              },
-            ),
-            const SizedBox(height: 12),
-            const Text("Quick voice shortcuts:",
-                style: TextStyle(fontSize: 11, color: Colors.white54)),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                "keys",
-                "phone",
-                "wallet",
-                "white cane",
-                "water bottle",
-                "glasses",
-                "laptop",
-                "backpack"
-              ].map((item) {
-                return InkWell(
-                  onTap: () {
-                    Navigator.of(ctx).pop();
-                    _startSonarSearchFor(item);
-                  },
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1E293B),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                          color: const Color(0xFFFF0055).withValues(alpha: 0.3)),
-                    ),
-                    child: Text(
-                      item.toUpperCase(),
-                      style: const TextStyle(
-                          fontSize: 10,
-                          color: Color(0xFFFF0055),
-                          fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text("CANCEL", style: TextStyle(color: Colors.white60)),
-          ),
-          ElevatedButton.icon(
-            onPressed: () {
-              final query = _voiceSonarItemController.text.trim();
-              if (query.isNotEmpty) {
-                Navigator.of(ctx).pop();
-                _startSonarSearchFor(query);
-              }
-            },
-            icon: const Icon(Icons.radar, size: 16),
-            label: const Text("START RADAR"),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFFF0055),
-              foregroundColor: Colors.white,
-            ),
-          ),
-        ],
-      ),
+    // Give TTS 1.2s to announce before opening microphone to avoid capturing app's own voice
+    await Future.delayed(const Duration(milliseconds: 1200));
+
+    final recognized = await _audioMutex.startVoiceInput();
+    if (recognized.isNotEmpty) {
+      var clean = recognized.toLowerCase().trim();
+      final prefixes = [
+        "find my ",
+        "find ",
+        "where is my ",
+        "where's my ",
+        "where is ",
+        "where are my ",
+        "locate my ",
+        "locate ",
+        "search for ",
+        "look for ",
+        "i lost my ",
+        "i lost ",
+        "bring me ",
+        "show me "
+      ];
+      for (final p in prefixes) {
+        if (clean.startsWith(p)) {
+          clean = clean.substring(p.length).trim();
+          break;
+        }
+      }
+      if (clean.isNotEmpty) {
+        _startSonarSearchFor(clean);
+        return;
+      }
+    }
+
+    _audioMutex.speak(
+      text:
+          "No speech recognized. Still searching for ${_objectFinderService.activeTargetLabel}.",
+      priority: AudioPriority.level3Context,
+      channelIndex: 3,
     );
   }
 
@@ -6396,16 +6332,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   Widget _buildLostItemSonarChannel() {
     final finder = _lastObjectFinderState;
     final isSearching = _objectFinderService.isSearching;
-    final quickVoiceChips = [
-      {"label": "keys", "icon": Icons.vpn_key},
-      {"label": "white cane", "icon": Icons.blind},
-      {"label": "water bottle", "icon": Icons.local_drink},
-      {"label": "wallet", "icon": Icons.account_balance_wallet},
-      {"label": "phone", "icon": Icons.phone_android},
-      {"label": "glasses", "icon": Icons.visibility},
-      {"label": "laptop", "icon": Icons.laptop},
-      {"label": "backpack", "icon": Icons.backpack},
-    ];
 
     return Container(
       child: Column(
@@ -6512,87 +6438,79 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                 ),
                 const SizedBox(height: 14),
 
-                // Large Accessible Voice Command Button
+                // 100% Voice-Driven Accessible Command for Blind People
                 Semantics(
                   button: true,
-                  label: "Speak Lost Item Name",
-                  hint: "Double tap to speak the name of your lost item",
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _showVoiceItemSearchDialog,
-                      icon: const Icon(Icons.mic, size: 22, color: Colors.white),
-                      label: Text(
-                        "🎙️ SPEAK LOST ITEM: ${_objectFinderService.activeTargetLabel.toUpperCase()}",
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.8,
-                          color: Colors.white,
+                  label: "Voice Item Finder: Double-tap to speak the item you want to locate",
+                  hint: "Speak item name, like keys, phone, charger, or cane. No typing required.",
+                  child: InkWell(
+                    onTap: _startVoiceItemSearch,
+                    borderRadius: BorderRadius.circular(16),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFFFF0055), Color(0xFFC2003F)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
                         ),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFFF0055),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        elevation: 4,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 10),
-
-                // Quick Voice / Tap Item Chips
-                const Text(
-                  "Quick Voice Targets:",
-                  style: TextStyle(fontSize: 11, color: Colors.white54),
-                ),
-                const SizedBox(height: 6),
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: quickVoiceChips.map((chip) {
-                      final label = chip['label'] as String;
-                      final icon = chip['icon'] as IconData;
-                      final isSelected =
-                          _objectFinderService.activeTargetLabel == label;
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: ActionChip(
-                          backgroundColor: isSelected
-                              ? const Color(0xFFFF0055).withValues(alpha: 0.25)
-                              : const Color(0xFF0A0E17),
-                          side: BorderSide(
-                            color: isSelected
-                                ? const Color(0xFFFF0055)
-                                : Colors.white24,
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFFFF0055).withValues(alpha: 0.35),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
                           ),
-                          avatar: Icon(
-                            icon,
-                            size: 14,
-                            color: isSelected
-                                ? const Color(0xFFFF0055)
-                                : Colors.white70,
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.2),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.mic, size: 28, color: Colors.white),
                           ),
-                          label: Text(
-                            label.toUpperCase(),
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: isSelected
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                              color: isSelected
-                                  ? const Color(0xFFFF0055)
-                                  : Colors.white70,
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  "🎙️ TAP TO SPEAK ITEM",
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 0.8,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  "Searching for: ${_objectFinderService.activeTargetLabel.toUpperCase()}",
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                const Text(
+                                  "100% Voice-Guided for Blind Users • Tap anywhere to change item",
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: Colors.white70,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                          onPressed: () => _startSonarSearchFor(label),
-                        ),
-                      );
-                    }).toList(),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ],

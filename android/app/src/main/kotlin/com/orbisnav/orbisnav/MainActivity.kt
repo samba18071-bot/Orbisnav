@@ -1,6 +1,8 @@
 package com.orbisnav.orbisnav
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -10,6 +12,7 @@ import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -44,6 +47,7 @@ class MainActivity : FlutterActivity(), TextToSpeech.OnInitListener {
         const val PRIORITY_LEVEL_1_SAFETY = 1
         const val PRIORITY_LEVEL_2_NAVIGATION = 2
         const val PRIORITY_LEVEL_3_CONTEXT = 3
+        private const val REQUEST_CODE_SPEECH = 2001
     }
 
     private var tts: TextToSpeech? = null
@@ -56,6 +60,7 @@ class MainActivity : FlutterActivity(), TextToSpeech.OnInitListener {
     // Track active utterance priority tier
     private val currentActivePriority = AtomicInteger(-1)
     private var audioFocusRequest: AudioFocusRequest? = null
+    private var pendingSpeechResult: MethodChannel.Result? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -171,9 +176,42 @@ class MainActivity : FlutterActivity(), TextToSpeech.OnInitListener {
             "isReady" -> {
                 result.success(isTtsReady)
             }
+            "startVoiceInput" -> {
+                startSpeechRecognition(result)
+            }
             else -> {
                 result.notImplemented()
             }
+        }
+    }
+
+    private fun startSpeechRecognition(result: MethodChannel.Result) {
+        try {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak the item you are looking for...")
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            }
+            pendingSpeechResult = result
+            startActivityForResult(intent, REQUEST_CODE_SPEECH)
+        } catch (e: Exception) {
+            Log.e(TAG, "Speech recognition intent failed: ${e.message}")
+            result.success("")
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_SPEECH) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                val matches = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                val recognized = matches?.firstOrNull()?.trim() ?: ""
+                pendingSpeechResult?.success(recognized)
+            } else {
+                pendingSpeechResult?.success("")
+            }
+            pendingSpeechResult = null
         }
     }
 

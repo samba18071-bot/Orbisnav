@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// Audio Priority Matrix tiers according to OrbisNav Core System Laws
@@ -446,6 +447,18 @@ class AudioMutexController {
     try {
       await _channel.invokeMethod('triggerHaptic', {'type': type});
     } catch (_) {}
+  }
+
+  /// Triggers native speech recognition for blind accessibility.
+  /// Returns the recognized spoken string (or empty string if cancelled).
+  Future<String> startVoiceInput() async {
+    try {
+      final String? result = await _channel.invokeMethod<String>('startVoiceInput');
+      return result?.trim() ?? "";
+    } catch (e) {
+      debugPrint("[AudioMutexController] startVoiceInput error: $e");
+      return "";
+    }
   }
 
   void dispose() {
