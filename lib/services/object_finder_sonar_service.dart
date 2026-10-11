@@ -74,6 +74,7 @@ class ObjectFinderSonarService {
     _audioMutex.speak(
       text: "Lost item sonar radar active. Locating ${_activeTargetLabel}. Sweep camera slowly across the room.",
       priority: AudioPriority.level2Navigation,
+      channelIndex: 3,
       haptic: true,
       force: true,
     );
@@ -88,6 +89,7 @@ class ObjectFinderSonarService {
     _audioMutex.speak(
       text: "Object search stopped.",
       priority: AudioPriority.level3Context,
+      channelIndex: 3,
       haptic: false,
     );
   }
@@ -173,6 +175,7 @@ class ObjectFinderSonarService {
       _audioMutex.speak(
         text: "$labelName found! Located $directionHint at $clock, $distStr meters away.",
         priority: AudioPriority.level1Safety,
+        channelIndex: 3,
         haptic: true,
         force: true,
       );
@@ -188,12 +191,14 @@ class ObjectFinderSonarService {
           _audioMutex.speak(
             text: "$labelName directly in front of you at reach distance. Reach out your hand.",
             priority: AudioPriority.level1Safety,
+            channelIndex: 3,
             haptic: true,
           );
         } else {
           _audioMutex.speak(
             text: "$labelName at $clock, $distStr meters. $directionHint.",
             priority: AudioPriority.level2Navigation,
+            channelIndex: 3,
             haptic: false,
           );
         }

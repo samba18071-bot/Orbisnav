@@ -147,4 +147,113 @@ void main() {
       expect(caption.backgroundLandmarks.length, equals(1));
     });
   });
+
+  group('Channel Priority Matrix: Active Tab Supremacy & Background Demotion', () {
+    late AudioMutexController audioMutex;
+
+    setUp(() {
+      audioMutex = AudioMutexController();
+      audioMutex.setActiveChannel(2); // Channel 2 (Doc Scan / Google Lens) is active
+    });
+
+    tearDown(() {
+      audioMutex.hardStop();
+    });
+
+    test('Active tab speech takes immediate active priority', () async {
+      audioMutex.speak(
+        text: 'In front of you: Laptop on wooden desk.',
+        priority: AudioPriority.level2Navigation,
+        channelIndex: 2,
+        force: true,
+      );
+
+      expect(audioMutex.currentActivePriority, equals(AudioPriority.level2Navigation));
+    });
+
+    test('Background channel cannot preempt active tab speech', () async {
+      // 1. Active tab (Channel 2) is speaking
+      audioMutex.speak(
+        text: 'Reading: Paragraph 1 of document.',
+        priority: AudioPriority.level2Navigation,
+        channelIndex: 2,
+        force: true,
+      );
+
+      expect(audioMutex.currentActivePriority, equals(AudioPriority.level2Navigation));
+
+      // 2. Background tab (Channel 1 Navigation) attempts Level 1 Safety cue
+      audioMutex.speak(
+        text: 'Turn right in 50 meters.',
+        priority: AudioPriority.level1Safety,
+        channelIndex: 1, // Background!
+        force: true,
+      );
+
+      // Active tab speech must NOT be preempted by background channel!
+      expect(audioMutex.currentActivePriority, equals(AudioPriority.level2Navigation));
+    });
+
+    test('Background channel Level 3 context is discarded when active tab is speaking', () async {
+      audioMutex.speak(
+        text: 'Active lens scene description.',
+        priority: AudioPriority.level2Navigation,
+        channelIndex: 2,
+        force: true,
+      );
+
+      final accepted = await audioMutex.speak(
+        text: 'Background general chatter from another channel.',
+        priority: AudioPriority.level3Context,
+        channelIndex: 1, // Background!
+        force: true,
+      );
+
+      expect(accepted, isFalse);
+    });
+
+    test('Active tab immediately preempts non-critical background channel speech', () async {
+      // Set active channel to 0 temporarily so channel 1 is considered active
+      audioMutex.setActiveChannel(1);
+      audioMutex.speak(
+        text: 'Navigating towards main building.',
+        priority: AudioPriority.level2Navigation,
+        channelIndex: 1,
+        force: true,
+      );
+
+      // Now user switches to Channel 3 (Lost Item Sonar)
+      audioMutex.setActiveChannel(3);
+
+      // Channel 3 issues speech
+      audioMutex.speak(
+        text: 'Keys found at 12 oclock 1 meter away.',
+        priority: AudioPriority.level2Navigation,
+        channelIndex: 3,
+        force: true,
+      );
+
+      // Channel 3 must have immediately taken over!
+      expect(audioMutex.currentActivePriority, equals(AudioPriority.level2Navigation));
+    });
+
+    test('Level 0 Critical emergency from any channel still alerts user', () async {
+      audioMutex.speak(
+        text: 'Scanning page...',
+        priority: AudioPriority.level2Navigation,
+        channelIndex: 2,
+        force: true,
+      );
+
+      // Life safety emergency strikes from background channel
+      audioMutex.speak(
+        text: 'Emergency hazard! Drop-off 1 meter ahead.',
+        priority: AudioPriority.level0Critical,
+        channelIndex: 0,
+        force: true,
+      );
+
+      expect(audioMutex.currentActivePriority, equals(AudioPriority.level0Critical));
+    });
+  });
 }

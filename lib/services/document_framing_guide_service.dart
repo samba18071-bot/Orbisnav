@@ -255,6 +255,7 @@ class DocumentFramingGuideService {
       _audioMutex.speak(
         text: 'Document captured.',
         priority: AudioPriority.level2Navigation,
+        channelIndex: 2,
         haptic: true,
       );
 
@@ -315,6 +316,7 @@ class DocumentFramingGuideService {
       _audioMutex.speak(
         text: result.spokenGuidance,
         priority: AudioPriority.level2Navigation,
+        channelIndex: 2,
         haptic: false,
       );
     }

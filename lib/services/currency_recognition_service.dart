@@ -332,6 +332,7 @@ class CurrencyRecognitionService {
     _audioMutex.speak(
       text: 'Currency set to ${_getCurrencyName(currency)}.',
       priority: AudioPriority.level2Navigation,
+      channelIndex: 2,
       haptic: true,
     );
   }
@@ -393,6 +394,7 @@ class CurrencyRecognitionService {
         _audioMutex.speak(
           text: matchedNote.spokenText,
           priority: AudioPriority.level2Navigation,
+          channelIndex: 2,
           haptic: false,
         );
 

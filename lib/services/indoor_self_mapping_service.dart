@@ -171,6 +171,7 @@ class IndoorSelfMappingService {
     _audioMutex.speak(
       text: 'Starting self-mapping for $venueName. Walk through the venue and point at door signs.',
       priority: AudioPriority.level2Navigation,
+      channelIndex: 1,
       haptic: true,
     );
 
@@ -200,6 +201,7 @@ class IndoorSelfMappingService {
     _audioMutex.speak(
       text: 'Landmark $plaqueName recorded at node ${_recordedNodes.length}.',
       priority: AudioPriority.level2Navigation,
+      channelIndex: 1,
       haptic: true,
     );
 
@@ -219,6 +221,7 @@ class IndoorSelfMappingService {
     _audioMutex.speak(
       text: 'Mapping complete for ${_recordingVenueName}. Saved ${_recordedNodes.length} navigational nodes.',
       priority: AudioPriority.level2Navigation,
+      channelIndex: 1,
       haptic: true,
     );
 
@@ -254,6 +257,7 @@ class IndoorSelfMappingService {
     _audioMutex.speak(
       text: 'Indoor route calculated to ${endNode.name}. ${_getCurrentInstruction()}',
       priority: AudioPriority.level2Navigation,
+      channelIndex: 1,
       haptic: true,
     );
 
@@ -281,6 +285,7 @@ class IndoorSelfMappingService {
           _audioMutex.speak(
             text: _getCurrentInstruction(),
             priority: AudioPriority.level2Navigation,
+            channelIndex: 1,
             haptic: true,
           );
         } else {
@@ -288,6 +293,7 @@ class IndoorSelfMappingService {
           _audioMutex.speak(
             text: 'You have arrived at ${target.name}.',
             priority: AudioPriority.level2Navigation,
+            channelIndex: 1,
             haptic: true,
           );
         }
@@ -316,6 +322,7 @@ class IndoorSelfMappingService {
           _audioMutex.speak(
             text: 'Landmark confirmed: ${node.name}. Position calibrated.',
             priority: AudioPriority.level2Navigation,
+            channelIndex: 1,
             haptic: true,
           );
 

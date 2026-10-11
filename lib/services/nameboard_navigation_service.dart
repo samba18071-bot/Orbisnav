@@ -158,6 +158,7 @@ class NameboardNavigationService {
     AudioMutexController().speak(
       text: "Saved $name to your campus places.",
       priority: AudioPriority.level2Navigation,
+      channelIndex: 1,
       haptic: true,
     );
 
@@ -189,6 +190,7 @@ class NameboardNavigationService {
       AudioMutexController().speak(
         text: "Navigating to ${destination.name} $blockDetail. Distance $distStr at $_clockVector. Continue along pathway.",
         priority: AudioPriority.level2Navigation,
+        channelIndex: 1,
         haptic: true,
       );
     }
@@ -207,6 +209,7 @@ class NameboardNavigationService {
     AudioMutexController().speak(
       text: "Navigation stopped.",
       priority: AudioPriority.level2Navigation,
+      channelIndex: 1,
       haptic: false,
     );
 
@@ -474,6 +477,7 @@ out center 60;
       AudioMutexController().speak(
         text: text,
         priority: AudioPriority.level2Navigation,
+        channelIndex: 1,
         haptic: true,
       );
     }

@@ -105,6 +105,7 @@ class DocumentBatchOcrReaderService {
     _audioMutex.speak(
       text: 'Page $_currentPageCount added. ${_paragraphs.length} paragraphs ready.',
       priority: AudioPriority.level2Navigation,
+      channelIndex: 2,
       haptic: true,
     );
 
@@ -144,6 +145,7 @@ class DocumentBatchOcrReaderService {
     _audioMutex.speak(
       text: 'Reading paused.',
       priority: AudioPriority.level2Navigation,
+      channelIndex: 2,
       haptic: false,
     );
 
@@ -181,6 +183,7 @@ class DocumentBatchOcrReaderService {
       _audioMutex.speak(
         text: 'End of document.',
         priority: AudioPriority.level2Navigation,
+        channelIndex: 2,
         haptic: true,
       );
       _sessionStreamController.add(currentSession);
@@ -224,6 +227,7 @@ class DocumentBatchOcrReaderService {
     _audioMutex.speak(
       text: p.text,
       priority: AudioPriority.level2Navigation,
+      channelIndex: 2,
       haptic: false,
     );
 

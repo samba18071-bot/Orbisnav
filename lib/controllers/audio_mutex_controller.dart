@@ -28,6 +28,7 @@ class AudioRequest {
   final String id;
   final String text;
   final AudioPriority priority;
+  final int? channelIndex;
   final bool haptic;
   final DateTime timestamp;
   final Completer<bool> completer;
@@ -36,6 +37,7 @@ class AudioRequest {
     required this.id,
     required this.text,
     required this.priority,
+    this.channelIndex,
     this.haptic = true,
     DateTime? timestamp,
   })  : timestamp = timestamp ?? DateTime.now(),
@@ -77,6 +79,44 @@ class AudioMutexController {
   AudioRequest? _currentActiveRequest;
   AudioPriority? get currentActivePriority => _currentActiveRequest?.priority;
   bool get isSpeaking => _currentActiveRequest != null;
+
+  // Active Channel / Tab tracking (0: Safety HUD, 1: Nav, 2: Doc Scan / Lens, 3: Lost Item Sonar)
+  int _activeChannelIndex = 0;
+  int get activeChannelIndex => _activeChannelIndex;
+
+  /// Sets the currently active UI channel/tab.
+  /// Dynamically elevates the current channel's priority over background channels,
+  /// flushes background queues, and preempts any lingering background speech.
+  void setActiveChannel(int index) {
+    if (_activeChannelIndex == index) return;
+    _activeChannelIndex = index;
+    _statusController.add("Active Channel set to $index. Background channels demoted.");
+
+    // If an inactive channel is currently speaking a non-critical utterance, stop it immediately
+    if (_currentActiveRequest != null &&
+        _currentActiveRequest!.channelIndex != null &&
+        _currentActiveRequest!.channelIndex != index &&
+        _currentActiveRequest!.priority != AudioPriority.level0Critical) {
+      _channel.invokeMethod('stop').catchError((_) => null);
+      if (!_currentActiveRequest!.completer.isCompleted) {
+        _currentActiveRequest!.completer.complete(false);
+      }
+      _currentActiveRequest = null;
+      _activeSpeechController.add(null);
+    }
+
+    // Purge any non-critical queued speech from other channels
+    clearQueueForOtherChannels(index);
+    _processNextInQueue();
+  }
+
+  /// Removes all queued non-critical requests belonging to any channel except [keepChannelIndex].
+  void clearQueueForOtherChannels(int keepChannelIndex) {
+    _queue.removeWhere((item) =>
+        item.channelIndex != null &&
+        item.channelIndex != keepChannelIndex &&
+        item.priority != AudioPriority.level0Critical);
+  }
 
   // Queued requests for non-preemptive tiers
   final List<AudioRequest> _queue = [];
@@ -128,12 +168,14 @@ class AudioMutexController {
     return s.replaceAll(RegExp(r'\d+(\.\d+)?\s*(meters|m|s|seconds)?', caseSensitive: false), '').trim().toLowerCase();
   }
 
-  /// Request speech output adhering to the Audio Priority Matrix.
+  /// Request speech output adhering to the Audio Priority Matrix and Channel Precedence.
   /// 
-  /// Enforces "Tell Only Once" - drops identical/near-identical phrases within 15 seconds unless force=true.
+  /// The active tab/channel has primary priority over background/other channels.
+  /// Non-critical speech from other channels is demoted and cannot interrupt the current tab.
   Future<bool> speak({
     required String text,
     required AudioPriority priority,
+    int? channelIndex,
     bool haptic = true,
     bool force = false,
   }) async {
@@ -153,8 +195,38 @@ class AudioMutexController {
       id: 'req_${now.millisecondsSinceEpoch}_${priority.value}',
       text: text,
       priority: priority,
+      channelIndex: channelIndex,
       haptic: haptic,
     );
+
+    final bool isFromActiveChannel =
+        (channelIndex == null || channelIndex == _activeChannelIndex);
+
+    // RULE 1: If speech request comes from a BACKGROUND / OTHER CHANNEL
+    if (!isFromActiveChannel) {
+      // When a channel is selected, other channels must stop completely!
+      // Only Level 0 Critical emergency hazards (life safety) can alert the user
+      if (priority == AudioPriority.level0Critical) {
+        return _handleCriticalSafetyPreemption(request);
+      }
+
+      // All other channels are stopped and silent: do not queue or speak
+      return false;
+    }
+
+    // RULE 2: Speech request comes from the CURRENT ACTIVE CHANNEL
+    // If a background channel is currently speaking a non-critical utterance,
+    // the active tab IMMEDIATELY PREEMPTS the background utterance!
+    if (_currentActiveRequest != null &&
+        _currentActiveRequest!.channelIndex != null &&
+        _currentActiveRequest!.channelIndex != _activeChannelIndex &&
+        _currentActiveRequest!.priority != AudioPriority.level0Critical) {
+      _channel.invokeMethod('stop').catchError((_) => null);
+      if (!_currentActiveRequest!.completer.isCompleted) {
+        _currentActiveRequest!.completer.complete(false);
+      }
+      _currentActiveRequest = null;
+    }
 
     // Rule: Level 0 or Level 1 Hazard detected
     if (priority == AudioPriority.level0Critical ||
@@ -169,6 +241,25 @@ class AudioMutexController {
 
     // Rule: Level 3 Context / AI
     return _handleContextSpeech(request);
+  }
+
+  Future<bool> _executeSpeech(AudioRequest request) async {
+    _currentActiveRequest = request;
+    _activeSpeechController.add(request);
+
+    try {
+      final bool success = await _channel.invokeMethod<bool>('speak', {
+        'text': request.text,
+        'priority': request.priority.value,
+        'haptic': request.haptic,
+        'utteranceId': request.id,
+      }) ?? false;
+
+      return success;
+    } catch (e) {
+      _onSpeechFinished(request.id);
+      return false;
+    }
   }
 
   /// Handles Level 0 & Level 1 hard preemption
@@ -189,23 +280,7 @@ class AudioMutexController {
     // Drop any lower priority requests from the internal queue
     _queue.removeWhere((item) => item.priority.value > request.priority.value);
 
-    // Hard flush native TTS queue
-    _currentActiveRequest = request;
-    _activeSpeechController.add(request);
-
-    try {
-      final bool success = await _channel.invokeMethod<bool>('speak', {
-        'text': request.text,
-        'priority': request.priority.value,
-        'haptic': request.haptic,
-        'utteranceId': request.id,
-      }) ?? false;
-
-      return success;
-    } catch (e) {
-      _onSpeechFinished(request.id);
-      return false;
-    }
+    return _executeSpeech(request);
   }
 
   /// Handles Level 2 Navigation cues
@@ -231,21 +306,7 @@ class AudioMutexController {
     // Drop Level 3 from queue
     _queue.removeWhere((item) => item.priority == AudioPriority.level3Context);
 
-    _currentActiveRequest = request;
-    _activeSpeechController.add(request);
-
-    try {
-      final bool success = await _channel.invokeMethod<bool>('speak', {
-        'text': request.text,
-        'priority': request.priority.value,
-        'haptic': request.haptic,
-        'utteranceId': request.id,
-      }) ?? false;
-      return success;
-    } catch (e) {
-      _onSpeechFinished(request.id);
-      return false;
-    }
+    return _executeSpeech(request);
   }
 
   /// Handles Level 3 Context / AI
@@ -262,21 +323,7 @@ class AudioMutexController {
       return request.completer.future;
     }
 
-    _currentActiveRequest = request;
-    _activeSpeechController.add(request);
-
-    try {
-      final bool success = await _channel.invokeMethod<bool>('speak', {
-        'text': request.text,
-        'priority': request.priority.value,
-        'haptic': request.haptic,
-        'utteranceId': request.id,
-      }) ?? false;
-      return success;
-    } catch (e) {
-      _onSpeechFinished(request.id);
-      return false;
-    }
+    return _executeSpeech(request);
   }
 
   /// Hard stops native TTS and clears speech queue completely
@@ -329,15 +376,41 @@ class AudioMutexController {
     speak(
       text: resumeText,
       priority: AudioPriority.level3Context,
+      channelIndex: _activeChannelIndex,
       haptic: false,
     );
+  }
+
+  /// Comparator ensuring the active channel always has precedence over background channels
+  int _compareRequests(AudioRequest a, AudioRequest b) {
+    // 1. Level 0 Critical always has absolute top priority
+    if (a.priority == AudioPriority.level0Critical &&
+        b.priority != AudioPriority.level0Critical) return -1;
+    if (b.priority == AudioPriority.level0Critical &&
+        a.priority != AudioPriority.level0Critical) return 1;
+
+    final bool aIsActive =
+        a.channelIndex == null || a.channelIndex == _activeChannelIndex;
+    final bool bIsActive =
+        b.channelIndex == null || b.channelIndex == _activeChannelIndex;
+
+    // 2. Current active tab always has precedence over background tabs!
+    if (aIsActive && !bIsActive) return -1;
+    if (!aIsActive && bIsActive) return 1;
+
+    // 3. For requests within the same channel tier, sort by priority value (0 is highest)
+    final int pComp = a.priority.value.compareTo(b.priority.value);
+    if (pComp != 0) return pComp;
+
+    // 4. Same priority: FIFO by timestamp
+    return a.timestamp.compareTo(b.timestamp);
   }
 
   void _processNextInQueue() {
     if (_queue.isEmpty || _currentActiveRequest != null) return;
 
-    // Sort queue by priority ascending (0 is highest)
-    _queue.sort((a, b) => a.priority.value.compareTo(b.priority.value));
+    // Sort queue with active channel precedence
+    _queue.sort(_compareRequests);
     final next = _queue.removeAt(0);
 
     // Skip expired requests (> 10s old)
@@ -347,16 +420,8 @@ class AudioMutexController {
       return;
     }
 
-    _currentActiveRequest = next;
-    _activeSpeechController.add(next);
-
-    _channel.invokeMethod<bool>('speak', {
-      'text': next.text,
-      'priority': next.priority.value,
-      'haptic': next.haptic,
-      'utteranceId': next.id,
-    }).then((success) {
-      if (!(success ?? false)) {
+    _executeSpeech(next).then((success) {
+      if (!success) {
         _onSpeechFinished(next.id);
       }
     }).catchError((_) {

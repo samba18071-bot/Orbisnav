@@ -494,13 +494,18 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _startSensorStream();
 
     // 8. Start real-time obstacle detection streaming loop
-    _startVisionStream();
+    _audioMutex.setActiveChannel(_activeNavTab);
+    _stopAllChannelsExcept(_activeNavTab);
+    if (_activeNavTab == 0) {
+      _startVisionStream();
+    }
 
     // Initial voice greeting
     _audioMutex.speak(
       text:
           "AI Eyes obstacle and motion detection activated. Standalone offline mode ready.",
       priority: AudioPriority.level2Navigation,
+      channelIndex: 0,
       haptic: true,
     );
 
@@ -775,35 +780,51 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     super.dispose();
   }
 
-  void _switchChannel(int newChannel) {
-    if (newChannel == _activeNavTab) return;
-    final oldChannel = _activeNavTab;
-
-    // 1. Immediately stop previous channel tasks & audio speech
-    _audioMutex.stopAll();
-
-    if (oldChannel == 0) {
-      // Leaving Safety HUD: Stop active vision loop and edge detector immediately
+  void _stopAllChannelsExcept(int activeChannel) {
+    // Channel 0 (Safety HUD): Stop vision stream, cancel timer, disable detector
+    if (activeChannel != 0) {
       _visionStreamTimer?.cancel();
       _visionStreamTimer = null;
       _onDeviceDetector.setEnabled(false);
-    } else if (oldChannel == 1) {
-      // Leaving Navigation: Halt active turn-by-turn audio prompts
-    } else if (oldChannel == 2) {
-      // Leaving Reader / Seeing AI: Cancel ongoing scanner tasks, auto scan loop and pause document audio reader
+      _isProcessingFrame = false;
+    }
+
+    // Channel 1 (Navigation): Stop GPS turn-by-turn navigation & indoor mapping
+    if (activeChannel != 1) {
+      _navService.stopNavigation();
+      _indoorMappingService.stopRecordingAndExportMap();
+    }
+
+    // Channel 2 (Doc Scan / Google Lens): Cancel auto-scan timer, stop continuous OCR and document reading
+    if (activeChannel != 2) {
       _isReaderScanning = false;
       _isAutoScanningReader = false;
       _readerAutoScanTimer?.cancel();
       _readerAutoScanTimer = null;
+      _documentReaderService.stopReading();
       _documentReaderService.pauseReading();
-    } else if (oldChannel == 3) {
-      // Leaving Lost Item Sonar: Stop sonar audio/radar loop and stream
+    }
+
+    // Channel 3 (Lost Item Sonar): Cancel sonar stream timer, ping timer, and stop object search
+    if (activeChannel != 3) {
       _itemSonarStreamTimer?.cancel();
       _itemSonarStreamTimer = null;
       _sonarPingTimer?.cancel();
       _sonarPingTimer = null;
+      _isProcessingSonarFrame = false;
       _objectFinderService.stopSearch();
     }
+  }
+
+  void _switchChannel(int newChannel) {
+    if (newChannel == _activeNavTab) return;
+
+    // 1. Immediately inform AudioMutex of active channel switch & stop/purge previous channel tasks
+    _audioMutex.setActiveChannel(newChannel);
+    _audioMutex.stopAll();
+
+    // 2. Hard stop ALL other channels completely
+    _stopAllChannelsExcept(newChannel);
 
     setState(() {
       _activeNavTab = newChannel;
@@ -836,6 +857,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _audioMutex.speak(
       text: "Switched to ${channelNames[newChannel]} Mode.",
       priority: AudioPriority.level2Navigation,
+      channelIndex: newChannel,
       force: true,
       haptic: true,
     );
@@ -932,6 +954,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
             _audioMutex.speak(
               text: personMsg,
               priority: AudioPriority.level2Navigation,
+              channelIndex: 2,
             );
             if (mounted) {
               setState(() {
@@ -946,7 +969,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               now.difference(_lastAutoSpokenPersonTime!).inSeconds >= 8;
           if (isNew) {
             _lastAutoSpokenPersonTime = now;
-            _audioMutex.speak(text: personNoneMsg, priority: AudioPriority.level3Context);
+            _audioMutex.speak(text: personNoneMsg, priority: AudioPriority.level3Context, channelIndex: 2);
             if (mounted) {
               setState(() => _lastReaderScannedSummary = personNoneMsg);
             }
@@ -973,7 +996,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           _lastAutoSpokenColor = colorMsg;
           _lastAutoSpokenColorTime = now;
           HapticFeedback.selectionClick();
-          _audioMutex.speak(text: colorMsg, priority: AudioPriority.level2Navigation);
+          _audioMutex.speak(text: colorMsg, priority: AudioPriority.level2Navigation, channelIndex: 2);
           if (mounted) {
             setState(() {
               _lastReaderScannedSummary = colorMsg;
@@ -999,7 +1022,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           _lastAutoSpokenLightTime = now;
           HapticFeedback.selectionClick();
           SystemSound.play(SystemSoundType.click);
-          _audioMutex.speak(text: lightMsg, priority: AudioPriority.level2Navigation);
+          _audioMutex.speak(text: lightMsg, priority: AudioPriority.level2Navigation, channelIndex: 2);
           if (mounted) {
             setState(() {
               _lastReaderScannedSummary = lightMsg;
@@ -1023,7 +1046,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           _lastAutoSpokenScene = sceneMsg;
           _lastAutoSpokenSceneTime = now;
           HapticFeedback.lightImpact();
-          _audioMutex.speak(text: sceneMsg, priority: AudioPriority.level2Navigation);
+          _audioMutex.speak(text: sceneMsg, priority: AudioPriority.level2Navigation, channelIndex: 2);
           if (mounted) {
             setState(() {
               _lastReaderScannedSummary = sceneMsg;
@@ -1071,7 +1094,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               now.difference(_lastSpokenGuidanceCueTime!).inSeconds >= 5;
           if (isNewCue && cue.isNotEmpty) {
             _lastSpokenGuidanceCueTime = now;
-            _audioMutex.speak(text: cue, priority: AudioPriority.level3Context);
+            _audioMutex.speak(text: cue, priority: AudioPriority.level3Context, channelIndex: 2);
           }
         }
       }
@@ -1153,6 +1176,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
             _audioMutex.speak(
               text: spoken,
               priority: AudioPriority.level2Navigation,
+              channelIndex: 2,
               haptic: true,
             );
             if (mounted) {
@@ -1237,6 +1261,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           _audioMutex.speak(
             text: "In front of you: $lensDescription",
             priority: AudioPriority.level2Navigation,
+            channelIndex: 2,
           );
           if (mounted) {
             setState(() {
@@ -1291,6 +1316,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
             _audioMutex.speak(
               text: detectedText,
               priority: AudioPriority.level2Navigation,
+              channelIndex: 2,
               haptic: false,
             );
             if (mounted) {
@@ -1454,6 +1480,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _audioMutex.speak(
       text: "Voice item search active. Speak or select the item to find.",
       priority: AudioPriority.level2Navigation,
+      channelIndex: 3,
       force: true,
     );
 
@@ -1583,6 +1610,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       _audioMutex.speak(
         text: "Camera not ready for scanning.",
         priority: AudioPriority.level3Context,
+        channelIndex: 2,
         force: true,
       );
       return;
@@ -1603,6 +1631,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                   ? "Scanning currency note..."
                   : "Scanning camera for documents, text, barcodes, and currency...",
       priority: AudioPriority.level3Context,
+      channelIndex: 2,
       force: true,
     );
 
@@ -1683,6 +1712,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         await _audioMutex.speak(
           text: msg,
           priority: AudioPriority.level3Context,
+          channelIndex: 2,
           force: true,
         );
         return;
@@ -1746,6 +1776,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           await _audioMutex.speak(
             text: spoken,
             priority: AudioPriority.level2Navigation,
+            channelIndex: 2,
             force: true,
           );
           return;
@@ -1755,6 +1786,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           await _audioMutex.speak(
             text: msg,
             priority: AudioPriority.level2Navigation,
+            channelIndex: 2,
             force: true,
           );
           return;
@@ -1775,6 +1807,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         await _audioMutex.speak(
           text: detectedText,
           priority: AudioPriority.level2Navigation,
+          channelIndex: 2,
           force: true,
         );
         return;
@@ -1798,6 +1831,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       await _audioMutex.speak(
         text: summary,
         priority: AudioPriority.level2Navigation,
+        channelIndex: 2,
         force: true,
       );
     } catch (e) {
