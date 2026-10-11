@@ -42,6 +42,8 @@ class ObjectFinderSonarService {
   final AudioMutexController _audioMutex;
   String _activeTargetLabel = "keys";
   bool _isSearching = false;
+  bool _wasFoundPreviously = false;
+  DateTime? _lastSpokenGuidanceTime;
   ObjectFinderTarget _currentState = ObjectFinderTarget.initial("keys");
 
   final StreamController<ObjectFinderTarget> _stateController =
@@ -55,15 +57,22 @@ class ObjectFinderSonarService {
   ObjectFinderSonarService({AudioMutexController? audioMutex})
       : _audioMutex = audioMutex ?? AudioMutexController();
 
+  String _formatLabel(String s) {
+    if (s.isEmpty) return s;
+    return s[0].toUpperCase() + s.substring(1);
+  }
+
   /// Starts searching for a specific item (e.g., 'keys', 'white cane', 'mug', 'wallet')
   void startSearch(String targetLabel) {
     _activeTargetLabel = targetLabel.trim().toLowerCase();
     _isSearching = true;
+    _wasFoundPreviously = false;
+    _lastSpokenGuidanceTime = null;
     _currentState = ObjectFinderTarget.initial(_activeTargetLabel);
     _stateController.add(_currentState);
 
     _audioMutex.speak(
-      text: "Locating $_activeTargetLabel. Sweep camera slowly across the room.",
+      text: "Lost item sonar radar active. Locating ${_activeTargetLabel}. Sweep camera slowly across the room.",
       priority: AudioPriority.level2Navigation,
       haptic: true,
       force: true,
@@ -72,6 +81,8 @@ class ObjectFinderSonarService {
 
   void stopSearch() {
     _isSearching = false;
+    _wasFoundPreviously = false;
+    _lastSpokenGuidanceTime = null;
     _currentState = ObjectFinderTarget.initial(_activeTargetLabel);
     _stateController.add(_currentState);
     _audioMutex.speak(
@@ -89,7 +100,7 @@ class ObjectFinderSonarService {
     double bestMatchScore = 0.0;
 
     for (final item in detections) {
-      if (_isMatching(item.label, _activeTargetLabel)) {
+      if (isMatching(item.label, _activeTargetLabel)) {
         if (item.confidence > bestMatchScore) {
           bestMatchScore = item.confidence;
           matchedItem = item;
@@ -98,6 +109,9 @@ class ObjectFinderSonarService {
     }
 
     if (matchedItem == null) {
+      if (_wasFoundPreviously) {
+        _wasFoundPreviously = false;
+      }
       _currentState = ObjectFinderTarget(
         targetLabel: _activeTargetLabel,
         isFound: false,
@@ -106,7 +120,7 @@ class ObjectFinderSonarService {
         alignmentScore: 0.0,
         sonarPingIntervalMs: 1200,
         stereoPan: 0.0,
-        guidanceCue: "No $_activeTargetLabel seen yet. Pan left or right.",
+        guidanceCue: "No ${_activeTargetLabel} seen yet. Pan left or right.",
       );
       _stateController.add(_currentState);
       return _currentState;
@@ -131,13 +145,17 @@ class ObjectFinderSonarService {
       directionHint = "To your right";
     }
 
-    final cue = "$directionHint, ${matchedItem.distanceMeters.toStringAsFixed(1)}m away at ${matchedItem.clockPosition}.";
+    final labelName = _formatLabel(matchedItem.label.isNotEmpty ? matchedItem.label : _activeTargetLabel);
+    final distStr = matchedItem.distanceMeters.toStringAsFixed(1);
+    final clock = matchedItem.clockPosition;
+
+    final cue = "$labelName found! Located $directionHint at $clock, $distStr meters away.";
 
     _currentState = ObjectFinderTarget(
       targetLabel: _activeTargetLabel,
       isFound: true,
       distanceMeters: matchedItem.distanceMeters,
-      clockPosition: matchedItem.clockPosition,
+      clockPosition: clock,
       alignmentScore: alignmentScore,
       sonarPingIntervalMs: pingIntervalMs,
       stereoPan: stereoPan,
@@ -146,19 +164,46 @@ class ObjectFinderSonarService {
 
     _stateController.add(_currentState);
 
-    // If item is within reaching distance (< 0.7m) and centered, give target acquisition feedback
-    if (matchedItem.distanceMeters < 0.7 && alignmentScore > 0.7) {
+    final now = DateTime.now();
+
+    // 1. First time object is matched/locked on: announce immediately!
+    if (!_wasFoundPreviously) {
+      _wasFoundPreviously = true;
+      _lastSpokenGuidanceTime = now;
       _audioMutex.speak(
-        text: "$_activeTargetLabel directly in front of you. Reach out your hand.",
+        text: "$labelName found! Located $directionHint at $clock, $distStr meters away.",
         priority: AudioPriority.level1Safety,
         haptic: true,
+        force: true,
       );
+    } else {
+      // 2. Periodic continuous tracking update
+      final timeSinceLast = _lastSpokenGuidanceTime == null
+          ? 9999
+          : now.difference(_lastSpokenGuidanceTime!).inMilliseconds;
+
+      if (timeSinceLast >= 2800) {
+        _lastSpokenGuidanceTime = now;
+        if (matchedItem.distanceMeters < 0.65 && alignmentScore > 0.7) {
+          _audioMutex.speak(
+            text: "$labelName directly in front of you at reach distance. Reach out your hand.",
+            priority: AudioPriority.level1Safety,
+            haptic: true,
+          );
+        } else {
+          _audioMutex.speak(
+            text: "$labelName at $clock, $distStr meters. $directionHint.",
+            priority: AudioPriority.level2Navigation,
+            haptic: false,
+          );
+        }
+      }
     }
 
     return _currentState;
   }
 
-  bool _isMatching(String itemLabel, String target) {
+  bool isMatching(String itemLabel, String target) {
     final i = itemLabel.toLowerCase().trim();
     final t = target.toLowerCase().trim();
     if (i == t || i.contains(t) || t.contains(i)) return true;

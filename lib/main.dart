@@ -818,6 +818,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       _startReaderAutoScanStream();
     } else if (newChannel == 3) {
       // Channel 4: Auto-start Lost Item Sonar stream with immediate active search
+      _onDeviceDetector.setEnabled(true);
       if (!_objectFinderService.isSearching) {
         _objectFinderService.startSearch(_objectFinderService.activeTargetLabel);
       }
@@ -1213,9 +1214,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   }
 
   void _startItemSonarStream() {
+    _onDeviceDetector.setEnabled(true);
     _itemSonarStreamTimer?.cancel();
     _itemSonarStreamTimer =
-        Timer.periodic(const Duration(milliseconds: 1000), (_) {
+        Timer.periodic(const Duration(milliseconds: 400), (_) {
       if (_activeNavTab == 3 &&
           _isCameraInitialized &&
           !_isProcessingSonarFrame &&
@@ -1242,16 +1244,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       if (target.isFound) {
         HapticFeedback.selectionClick();
         SystemSound.play(SystemSoundType.click);
-
-        final now = DateTime.now();
-        if (_lastSpokenGuidanceCueTime == null ||
-            now.difference(_lastSpokenGuidanceCueTime!).inSeconds >= 4) {
-          _lastSpokenGuidanceCueTime = now;
-          _audioMutex.speak(
-            text: target.guidanceCue,
-            priority: AudioPriority.level2Navigation,
-          );
-        }
       } else {
         HapticFeedback.lightImpact();
       }
@@ -1279,39 +1271,46 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         if (await f.exists()) await f.delete();
       } catch (_) {}
 
-      // Run on-device detector to identify candidate objects
-      await _onDeviceDetector.processFrameBytes(
+      // Ensure detector is enabled for real-time edge inference
+      _onDeviceDetector.setEnabled(true);
+
+      // Run on-device detector to identify candidate objects in the frame
+      final result = await _onDeviceDetector.processFrameBytes(
         bytes,
         devicePitchDeg: _pitchDeg,
       );
 
-      // Also check cloud scene if active target is not standard
+      final candidateObstacles = List<DetectedObstacle>.from(result.obstacles);
+      if (candidateObstacles.isEmpty && _activeObstacles.isNotEmpty) {
+        candidateObstacles.addAll(_activeObstacles);
+      }
+
+      // Check cloud scene if active target is not standard or not in COCO
       if (_objectFinderService.isSearching) {
         final targetLabel =
             _objectFinderService.activeTargetLabel.toLowerCase();
-        final hasOnDeviceMatch = _activeObstacles.any(
-            (o) => o.label.toLowerCase().contains(targetLabel));
+        final hasMatch = candidateObstacles.any(
+            (o) => _objectFinderService.isMatching(o.label, targetLabel));
 
-        if (!hasOnDeviceMatch && _cloudAiService.isAutoAnalyzeEnabled) {
+        if (!hasMatch && _cloudAiService.isAutoAnalyzeEnabled) {
           final cloudRes = await _cloudAiService.analyzeScene(
             bytes,
-            currentObstacles: _activeObstacles,
+            currentObstacles: candidateObstacles,
             devicePitchDeg: _pitchDeg,
             speakResult: false,
           );
 
           // Check if cloud found the target
           for (final obj in cloudRes.detailedObjects) {
-            if (obj.toLowerCase().contains(targetLabel)) {
-              // Synthesize a detected obstacle for target acquisition
-              _activeObstacles.add(
+            if (_objectFinderService.isMatching(obj, targetLabel)) {
+              candidateObstacles.add(
                 DetectedObstacle(
                   label: targetLabel,
-                  confidence: 0.90,
-                  xMin: 0.40,
-                  yMin: 0.35,
-                  xMax: 0.60,
-                  yMax: 0.65,
+                  confidence: 0.92,
+                  xMin: 0.35,
+                  yMin: 0.30,
+                  xMax: 0.65,
+                  yMax: 0.70,
                   distanceMeters: 1.2,
                   ttcSeconds: 4.0,
                   priority: AudioPriority.level2Navigation,
@@ -1324,13 +1323,16 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         }
       }
 
-      // Update vision candidates in ObjectFinderSonarService
+      // Update vision candidates in ObjectFinderSonarService (triggers instant found speech)
       final updatedState =
-          _objectFinderService.updateVisionCandidates(_activeObstacles);
+          _objectFinderService.updateVisionCandidates(candidateObstacles);
 
       if (mounted) {
         setState(() {
           _lastObjectFinderState = updatedState;
+          if (candidateObstacles.isNotEmpty) {
+            _activeObstacles = candidateObstacles;
+          }
         });
       }
 
@@ -1343,6 +1345,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   }
 
   void _startSonarSearchFor(String label) {
+    _onDeviceDetector.setEnabled(true);
     _objectFinderService.startSearch(label);
     _startSonarAcousticLoop();
     _startItemSonarStream();
