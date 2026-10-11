@@ -1065,6 +1065,15 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
             _lastFramingResult = framing;
           });
         }
+        if (_readerScanMode == 'document') {
+          final cue = framing.spokenGuidance;
+          final isNewCue = _lastSpokenGuidanceCueTime == null ||
+              now.difference(_lastSpokenGuidanceCueTime!).inSeconds >= 5;
+          if (isNewCue && cue.isNotEmpty) {
+            _lastSpokenGuidanceCueTime = now;
+            _audioMutex.speak(text: cue, priority: AudioPriority.level3Context);
+          }
+        }
       }
 
       // -------------------------------------------------------------
@@ -5727,7 +5736,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                           CircularProgressIndicator(color: Color(0xFF76FF03)),
                           SizedBox(height: 12),
                           Text(
-                            "Starting Seeing AI Live Camera...",
+                            "Starting Doc Scan Live Camera...",
                             style: TextStyle(color: Colors.white70, fontSize: 13),
                           ),
                         ],
