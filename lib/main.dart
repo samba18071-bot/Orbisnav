@@ -5808,38 +5808,46 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                   child: Row(
                     children: [
                       // Badge containing exact text 'DAILY LIVING ASSISTANT' for accessibility audit test
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.85),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: const Color(0xFF76FF03)),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                color: Color(0xFF76FF03),
-                                shape: BoxShape.circle,
+                      Flexible(
+                        flex: 5,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.85),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: const Color(0xFF76FF03)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFF76FF03),
+                                  shape: BoxShape.circle,
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 6),
-                            const Text(
-                              "DAILY LIVING ASSISTANT",
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 0.8,
-                                color: Color(0xFF76FF03),
+                              const SizedBox(width: 5),
+                              const Flexible(
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Text(
+                                    "DAILY LIVING ASSISTANT",
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.8,
+                                      color: Color(0xFF76FF03),
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
-                      const Spacer(),
+                      const SizedBox(width: 6),
                       if (_readerScanMode == 'product' || _readerScanMode == 'barcode') ...[
                         IconButton(
                           padding: EdgeInsets.zero,
@@ -5848,65 +5856,70 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                           tooltip: "Enter Barcode Number",
                           onPressed: _showManualBarcodeDialog,
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: 6),
                       ],
                       // 1-Tap Trusted Angels Video Call Button (Exact text for accessibility audit test)
-                      Semantics(
-                        button: true,
-                        label: "TRUSTED ANGELS CAREGIVER CALL",
-                        child: InkWell(
-                          onTap: () {
-                            if (_angelsCallService.isCallActive) {
-                              _angelsCallService.endCall();
-                            } else {
-                              _angelsCallService.startCall();
-                            }
-                            HapticFeedback.heavyImpact();
-                            setState(() {});
-                          },
-                          borderRadius: BorderRadius.circular(20),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: (_lastCallState.status == TrustedAngelCallStatus.connected ||
-                                      _lastCallState.status == TrustedAngelCallStatus.dialing)
-                                  ? const Color(0xFFFF1744).withValues(alpha: 0.9)
-                                  : Colors.black.withValues(alpha: 0.85),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
+                      Flexible(
+                        flex: 6,
+                        child: Semantics(
+                          button: true,
+                          label: "TRUSTED ANGELS CAREGIVER CALL",
+                          child: InkWell(
+                            onTap: () {
+                              if (_angelsCallService.isCallActive) {
+                                _angelsCallService.endCall();
+                              } else {
+                                _angelsCallService.startCall();
+                              }
+                              HapticFeedback.heavyImpact();
+                              setState(() {});
+                            },
+                            borderRadius: BorderRadius.circular(20),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                              decoration: BoxDecoration(
                                 color: (_lastCallState.status == TrustedAngelCallStatus.connected ||
                                         _lastCallState.status == TrustedAngelCallStatus.dialing)
-                                    ? const Color(0xFFFF1744)
-                                    : const Color(0xFF00E5FF),
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  (_lastCallState.status == TrustedAngelCallStatus.connected ||
-                                          _lastCallState.status == TrustedAngelCallStatus.dialing)
-                                      ? Icons.call_end
-                                      : Icons.video_call,
-                                  size: 14,
+                                    ? const Color(0xFFFF1744).withValues(alpha: 0.9)
+                                    : Colors.black.withValues(alpha: 0.85),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
                                   color: (_lastCallState.status == TrustedAngelCallStatus.connected ||
                                           _lastCallState.status == TrustedAngelCallStatus.dialing)
-                                      ? Colors.white
+                                      ? const Color(0xFFFF1744)
                                       : const Color(0xFF00E5FF),
                                 ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  "TRUSTED ANGELS CAREGIVER CALL",
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    (_lastCallState.status == TrustedAngelCallStatus.connected ||
+                                            _lastCallState.status == TrustedAngelCallStatus.dialing)
+                                        ? Icons.call_end
+                                        : Icons.video_call,
+                                    size: 14,
                                     color: (_lastCallState.status == TrustedAngelCallStatus.connected ||
                                             _lastCallState.status == TrustedAngelCallStatus.dialing)
                                         ? Colors.white
                                         : const Color(0xFF00E5FF),
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 4),
+                                  const Flexible(
+                                    child: FittedBox(
+                                      fit: BoxFit.scaleDown,
+                                      child: Text(
+                                        "TRUSTED ANGELS CAREGIVER CALL",
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
