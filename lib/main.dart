@@ -1111,7 +1111,18 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       // -------------------------------------------------------------
       // Microsoft Seeing AI: Currency Channel
       // -------------------------------------------------------------
-      if (_readerScanMode == 'currency' || _readerScanMode == 'all') {
+      // -------------------------------------------------------------
+      // Microsoft Seeing AI: Currency Channel (Gated to avoid false positives)
+      // -------------------------------------------------------------
+      if (_readerScanMode == 'currency' ||
+          (_readerScanMode == 'all' &&
+              (result.sceneSummary.toLowerCase().contains("dollar") ||
+                  result.sceneSummary.toLowerCase().contains("rupee") ||
+                  result.sceneSummary.toLowerCase().contains("euro") ||
+                  result.sceneSummary.toLowerCase().contains("banknote") ||
+                  result.sceneSummary.toLowerCase().contains("bill") ||
+                  result.sceneSummary.toLowerCase().contains("currency") ||
+                  result.sceneSummary.toLowerCase().contains("cash")))) {
         final summaryLower = result.sceneSummary.toLowerCase();
         final candidateTokens = <String>[];
         if (!_isNavigationalObstacleSentence(result.sceneSummary)) {
@@ -1156,12 +1167,92 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       }
 
       // -------------------------------------------------------------
+      // Channel 3: Google Lens Visual Scene, Object & Text Recognition
+      // -------------------------------------------------------------
+      if (_readerScanMode == 'all') {
+        // Collect visible objects in front of the camera
+        final visibleItems = _activeObstacles.map((o) => o.label).toSet().toList();
+        final List<String> lensElements = [];
+
+        if (visibleItems.isNotEmpty) {
+          final itemsList = visibleItems
+              .map((s) => s.isNotEmpty ? s[0].toUpperCase() + s.substring(1) : s)
+              .join(', ');
+          lensElements.add(itemsList);
+        }
+
+        // Visible text or signage
+        String detectedText = "";
+        if (result.sceneSummary.isNotEmpty &&
+            !_isNavigationalObstacleSentence(result.sceneSummary)) {
+          final clean = result.sceneSummary.trim();
+          if (clean.length > 3) {
+            detectedText = clean;
+          }
+        }
+        if (result.detailedObjects.isNotEmpty) {
+          final textObjs = result.detailedObjects
+              .where((o) =>
+                  !_isNavigationalObstacleSentence(o) &&
+                  (o.toLowerCase().contains("text") ||
+                      o.toLowerCase().contains("label") ||
+                      o.toLowerCase().contains("sign") ||
+                      o.toLowerCase().contains("document") ||
+                      o.toLowerCase().contains("heading") ||
+                      o.toLowerCase().contains("page")))
+              .toList();
+          if (textObjs.isNotEmpty) {
+            final tStr = textObjs.join('. ');
+            detectedText = detectedText.isEmpty ? tStr : "$detectedText. $tStr";
+          }
+        }
+
+        if (detectedText.isNotEmpty) {
+          lensElements.add("Reading: '$detectedText'");
+        }
+
+        // If no discrete object or text, generate environmental scene caption
+        if (lensElements.isEmpty) {
+          final caption = _captioningService.generateCaption(
+            obstacles: _activeObstacles,
+            phonePitchDeg: _pitchDeg,
+            phoneRollDeg: _rollDeg,
+          );
+          if (caption.spokenCaption.isNotEmpty) {
+            lensElements.add(caption.spokenCaption);
+          } else {
+            lensElements.add("Visual scene in view");
+          }
+        }
+
+        final lensDescription = lensElements.join(". ");
+        final isNewLens = lensDescription != _lastAutoSpokenScene ||
+            _lastAutoSpokenSceneTime == null ||
+            now.difference(_lastAutoSpokenSceneTime!).inSeconds >= 4;
+
+        if (isNewLens) {
+          _lastAutoSpokenScene = lensDescription;
+          _lastAutoSpokenSceneTime = now;
+          HapticFeedback.lightImpact();
+          _audioMutex.speak(
+            text: "In front of you: $lensDescription",
+            priority: AudioPriority.level2Navigation,
+          );
+          if (mounted) {
+            setState(() {
+              _lastReaderScannedSummary = "In front of you: $lensDescription";
+            });
+          }
+        }
+        return;
+      }
+
+      // -------------------------------------------------------------
       // Microsoft Seeing AI: Short Text & Document Reading
       // -------------------------------------------------------------
       if (_readerScanMode == 'text' ||
           _readerScanMode == 'ocr' ||
-          _readerScanMode == 'document' ||
-          _readerScanMode == 'all') {
+          _readerScanMode == 'document') {
         String detectedText = "";
         if (result.sceneSummary.isNotEmpty &&
             !_isNavigationalObstacleSentence(result.sceneSummary)) {
@@ -1206,30 +1297,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               setState(() {
                 _lastReaderScannedSummary = detectedText;
                 _currentReadingSession = session;
-              });
-            }
-          }
-        } else if (_readerScanMode == 'all') {
-          // Channel 3 Doc Scan: Autonomous Seeing AI ambient scene fallback
-          final caption = _captioningService.generateCaption(
-            obstacles: _activeObstacles,
-            phonePitchDeg: _pitchDeg,
-            phoneRollDeg: _rollDeg,
-          );
-          final sceneMsg = caption.spokenCaption;
-          final isNewScene = sceneMsg != _lastAutoSpokenScene ||
-              _lastAutoSpokenSceneTime == null ||
-              now.difference(_lastAutoSpokenSceneTime!).inSeconds >= 8;
-          if (isNewScene && sceneMsg.isNotEmpty) {
-            _lastAutoSpokenScene = sceneMsg;
-            _lastAutoSpokenSceneTime = now;
-            _audioMutex.speak(
-              text: sceneMsg,
-              priority: AudioPriority.level3Context,
-            );
-            if (mounted) {
-              setState(() {
-                _lastReaderScannedSummary = sceneMsg;
               });
             }
           }
@@ -6036,7 +6103,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 4),
                       children: [
-                        _buildSeeingAiModePill("Auto Doc Scan", "all", Icons.auto_awesome),
+                        _buildSeeingAiModePill("Google Lens", "all", Icons.camera_alt),
                         _buildSeeingAiModePill("Short Text", "text", Icons.short_text),
                         _buildSeeingAiModePill("Document", "document", Icons.document_scanner),
                         _buildSeeingAiModePill("Product", "product", Icons.qr_code_scanner),
@@ -6069,7 +6136,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           setState(() => _readerScanMode = modeKey);
           HapticFeedback.selectionClick();
           final announcement = modeKey == 'all'
-              ? "Auto Doc Scan active. Automatically recognizing documents, text, currency, products, and scene."
+              ? "Google Lens active. Identifying what is present in front of you, including objects, text, and scene."
               : "$label mode active. Point camera at subject for instant recognition.";
           _audioMutex.speak(
             text: announcement,

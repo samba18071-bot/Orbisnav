@@ -272,6 +272,25 @@ class OnDeviceObstacleDetector {
     "teddy bear": _ObjectPrior(0.35, 0.25, AudioPriority.level3Context, "Teddy bear"),
     "hair drier": _ObjectPrior(0.22, 0.18, AudioPriority.level3Context, "Hair dryer"),
     "toothbrush": _ObjectPrior(0.18, 0.02, AudioPriority.level3Context, "Toothbrush"),
+
+    // 11. Everyday Assistive & Personal Belongings (Sonar Target Items)
+    "ironbox": _ObjectPrior(0.16, 0.28, AudioPriority.level2Navigation, "Ironbox"),
+    "iron": _ObjectPrior(0.16, 0.28, AudioPriority.level2Navigation, "Ironbox"),
+    "keys": _ObjectPrior(0.04, 0.09, AudioPriority.level2Navigation, "Keys"),
+    "white cane": _ObjectPrior(1.20, 0.05, AudioPriority.level1Safety, "White cane"),
+    "cane": _ObjectPrior(1.20, 0.05, AudioPriority.level1Safety, "White cane"),
+    "wallet": _ObjectPrior(0.10, 0.12, AudioPriority.level2Navigation, "Wallet"),
+    "glasses": _ObjectPrior(0.05, 0.14, AudioPriority.level2Navigation, "Glasses"),
+    "spectacles": _ObjectPrior(0.05, 0.14, AudioPriority.level2Navigation, "Spectacles"),
+    "charger": _ObjectPrior(0.08, 0.08, AudioPriority.level2Navigation, "Charger"),
+    "shoes": _ObjectPrior(0.14, 0.30, AudioPriority.level2Navigation, "Shoes"),
+    "shoe": _ObjectPrior(0.14, 0.30, AudioPriority.level2Navigation, "Shoes"),
+    "medicine": _ObjectPrior(0.12, 0.06, AudioPriority.level2Navigation, "Medicine"),
+    "headphones": _ObjectPrior(0.18, 0.18, AudioPriority.level2Navigation, "Headphones"),
+    "watch": _ObjectPrior(0.04, 0.04, AudioPriority.level3Context, "Watch"),
+    "pen": _ObjectPrior(0.14, 0.01, AudioPriority.level3Context, "Pen"),
+    "fan": _ObjectPrior(0.45, 0.45, AudioPriority.level1Safety, "Fan"),
+    "plate": _ObjectPrior(0.03, 0.25, AudioPriority.level3Context, "Plate"),
   };
 
   // Multi-frame temporal persistence to suppress 1-frame transient glitches

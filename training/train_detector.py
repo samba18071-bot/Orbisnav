@@ -16,10 +16,10 @@ def main():
     root_dir = os.path.dirname(base_dir)
     yaml_path = os.path.join(base_dir, "dataset", "data.yaml")
 
-    # Generate or refresh dataset configuration
-    print("Building procedural metadata dataset for maximum accuracy...")
+    # Generate or refresh dataset configuration (1,200 train, 240 val)
+    print("Building expanded procedural dataset for maximum accuracy (1,200 train / 240 val)...")
     from dataset_builder import build_dataset
-    yaml_path = build_dataset(num_train=600, num_val=120)
+    yaml_path = build_dataset(num_train=1200, num_val=240)
 
     # Determine optimal compute device (MPS for Mac M-series, or CPU)
     if torch.backends.mps.is_available():
@@ -37,10 +37,10 @@ def main():
     model = YOLO(pretrained_model)
 
     print("Starting high-accuracy training on OrbisNav Assistive Dataset...")
-    # Train for 25 epochs with cosine LR schedule and strong regularizers
+    # Train for 30 epochs with cosine LR schedule, label smoothing, and strong regularizers
     results = model.train(
         data=yaml_path,
-        epochs=25,
+        epochs=50,
         imgsz=640,
         batch=16,
         device=device,
@@ -50,17 +50,18 @@ def main():
         exist_ok=True,
         verbose=True,
         cos_lr=True,
-        lr0=0.008,
+        lr0=0.01,
         lrf=0.01,
-        warmup_epochs=2.0,
+        warmup_epochs=3.0,
         mosaic=1.0,
-        mixup=0.20,
+        mixup=0.15,
+        label_smoothing=0.05,
         hsv_h=0.015,
         hsv_s=0.7,
         hsv_v=0.4,
         degrees=10.0,
-        translate=0.12,
-        scale=0.25,
+        translate=0.10,
+        scale=0.30,
         fliplr=0.5,
         save=True,
         save_period=-1,

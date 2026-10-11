@@ -206,28 +206,54 @@ class ObjectFinderSonarService {
   bool isMatching(String itemLabel, String target) {
     final i = itemLabel.toLowerCase().trim();
     final t = target.toLowerCase().trim();
+    // Direct match, substring match, or reverse substring match
     if (i == t || i.contains(t) || t.contains(i)) return true;
 
-    // Synonyms and proxy object matches for real-time edge detection
+    // Word token overlap match (e.g. "water" in "water bottle", "iron" in "ironbox")
+    final iWords = i.split(RegExp(r'[\s_\-]+')).where((w) => w.length > 2);
+    final tWords = t.split(RegExp(r'[\s_\-]+')).where((w) => w.length > 2);
+    for (final iw in iWords) {
+      if (tWords.any((tw) => tw == iw || tw.contains(iw) || iw.contains(tw))) {
+        return true;
+      }
+    }
+
+    // Comprehensive synonyms and proxy object matches for real-time edge detection
     const proxies = <String, List<String>>{
-      'keys': ['keys', 'key', 'scissors', 'remote', 'mouse', 'cell phone'],
-      'key': ['keys', 'key', 'scissors', 'remote', 'mouse', 'cell phone'],
-      'wallet': ['wallet', 'handbag', 'book', 'cell phone', 'purse'],
+      'ironbox': ['ironbox', 'iron', 'clothes iron', 'steam iron', 'press', 'appliance', 'toaster', 'hair drier', 'remote', 'mouse'],
+      'iron': ['ironbox', 'iron', 'clothes iron', 'steam iron', 'press', 'appliance', 'toaster', 'hair drier', 'remote', 'mouse'],
+      'charger': ['charger', 'adapter', 'charging cable', 'cable', 'wire', 'plug', 'cord', 'power adapter', 'remote', 'mouse'],
+      'shoes': ['shoes', 'shoe', 'slippers', 'sandals', 'sneakers', 'footwear', 'boots'],
+      'shoe': ['shoes', 'shoe', 'slippers', 'sandals', 'sneakers', 'footwear', 'boots'],
+      'medicine': ['medicine', 'pill bottle', 'pills', 'tablets', 'capsules', 'bottle', 'syrup'],
+      'headphones': ['headphones', 'earphones', 'earbuds', 'headset'],
+      'watch': ['watch', 'smartwatch', 'wristwatch', 'clock'],
+      'pen': ['pen', 'pencil', 'marker', 'highlighter', 'stationery'],
+      'plate': ['plate', 'dish', 'tray', 'saucer', 'bowl'],
+      'spoon': ['spoon', 'fork', 'knife', 'cutlery', 'utensil'],
+      'fan': ['fan', 'ceiling fan', 'table fan', 'electric fan'],
+      'keys': ['keys', 'key', 'keychain', 'scissors', 'remote', 'mouse', 'cell phone'],
+      'key': ['keys', 'key', 'keychain', 'scissors', 'remote', 'mouse', 'cell phone'],
+      'wallet': ['wallet', 'handbag', 'book', 'cell phone', 'purse', 'billfold', 'card holder'],
       'purse': ['wallet', 'handbag', 'purse', 'backpack'],
-      'white cane': ['white cane', 'cane', 'umbrella', 'stick', 'baseball bat'],
-      'cane': ['white cane', 'cane', 'umbrella', 'stick', 'baseball bat'],
-      'glasses': ['glasses', 'spectacles', 'remote', 'cell phone'],
-      'spectacles': ['glasses', 'spectacles', 'remote', 'cell phone'],
-      'water bottle': ['water bottle', 'bottle', 'cup', 'glass'],
-      'bottle': ['water bottle', 'bottle', 'cup', 'glass'],
-      'cup': ['cup', 'bottle', 'mug', 'glass'],
-      'mug': ['cup', 'bottle', 'mug'],
-      'phone': ['cell phone', 'phone', 'telephone'],
-      'cell phone': ['cell phone', 'phone', 'telephone'],
-      'laptop': ['laptop', 'tv', 'keyboard', 'computer'],
-      'backpack': ['backpack', 'handbag', 'suitcase', 'bag'],
-      'bag': ['backpack', 'handbag', 'suitcase', 'bag'],
-      'chair': ['chair', 'couch', 'bench'],
+      'white cane': ['white cane', 'cane', 'umbrella', 'stick', 'walking stick', 'baseball bat'],
+      'cane': ['white cane', 'cane', 'umbrella', 'stick', 'walking stick', 'baseball bat'],
+      'glasses': ['glasses', 'spectacles', 'sunglasses', 'reading glasses', 'eyewear', 'remote', 'cell phone'],
+      'spectacles': ['glasses', 'spectacles', 'sunglasses', 'reading glasses', 'eyewear', 'remote', 'cell phone'],
+      'water bottle': ['water bottle', 'bottle', 'cup', 'glass', 'flask', 'thermos', 'tumbler'],
+      'bottle': ['water bottle', 'bottle', 'cup', 'glass', 'flask', 'thermos', 'tumbler'],
+      'cup': ['cup', 'bottle', 'mug', 'glass', 'tea cup'],
+      'mug': ['cup', 'bottle', 'mug', 'coffee mug'],
+      'phone': ['cell phone', 'phone', 'telephone', 'mobile', 'smartphone'],
+      'cell phone': ['cell phone', 'phone', 'telephone', 'mobile', 'smartphone'],
+      'laptop': ['laptop', 'tv', 'keyboard', 'computer', 'screen', 'notebook'],
+      'backpack': ['backpack', 'handbag', 'suitcase', 'bag', 'tote'],
+      'bag': ['backpack', 'handbag', 'suitcase', 'bag', 'tote'],
+      'chair': ['chair', 'couch', 'bench', 'stool', 'seat', 'armchair'],
+      'table': ['table', 'desk', 'dining table', 'counter', 'workstation'],
+      'door': ['door', 'doorway', 'entrance', 'gate'],
+      'stairs': ['stairs', 'staircase', 'steps'],
+      'book': ['book', 'notebook', 'diary', 'magazine', 'paper'],
     };
 
     for (final entry in proxies.entries) {
