@@ -44,7 +44,7 @@ weights/
 runs/
 training/dataset/
 training/runs/
-training/saved_model/
+training/saved_model*/
 *.npy
 build_cmake/
 compile_commands.json

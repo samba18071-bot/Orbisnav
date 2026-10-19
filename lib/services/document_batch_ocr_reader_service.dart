@@ -94,7 +94,7 @@ class DocumentBatchOcrReaderService {
       );
 
   /// Ingests a new page of raw OCR text and formats it into natural paragraphs.
-  DocumentReadingSession addPage(String rawOcrText) {
+  DocumentReadingSession addPage(String rawOcrText, {bool announce = true}) {
     _currentPageCount++;
     final newParagraphs = _parseRawOcrToParagraphs(rawOcrText, _currentPageCount, _paragraphs.length);
     _paragraphs.addAll(newParagraphs);
@@ -102,12 +102,14 @@ class DocumentBatchOcrReaderService {
     final session = currentSession;
     _sessionStreamController.add(session);
 
-    _audioMutex.speak(
-      text: 'Page $_currentPageCount added. ${_paragraphs.length} paragraphs ready.',
-      priority: AudioPriority.level2Navigation,
-      channelIndex: 2,
-      haptic: true,
-    );
+    if (announce) {
+      _audioMutex.speak(
+        text: 'Page $_currentPageCount added. ${_paragraphs.length} paragraphs ready.',
+        priority: AudioPriority.level2Navigation,
+        channelIndex: 2,
+        haptic: true,
+      );
+    }
 
     return session;
   }

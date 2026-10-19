@@ -122,12 +122,21 @@ class SmartWhiteCaneBleService {
 
     _lastUltrasonicDistance = distanceMeters;
     _groundObstacle = distanceMeters < 1.2;
-    _groundDropOff = distanceMeters > 3.0; // Sudden range extension indicates drop-off / curb
+    _groundDropOff = distanceMeters > 3.0; // Sudden range extension indicates drop-off / curb / pothole
 
     _broadcast();
 
-    // If cane detects immediate ground collision hazard (< 0.6m)
-    if (distanceMeters < 0.6) {
+    // If cane detects drop-off / pothole hazard (range extension > 3.0m)
+    if (_groundDropOff) {
+      _audioMutex.speak(
+        text: "Caution! Ground drop-off or pothole ahead! Step carefully.",
+        priority: AudioPriority.level0Critical,
+        haptic: true,
+        force: true,
+      );
+      triggerCaneHandleHaptic([200, 100, 200]); // Rapid warning pulse
+    } else if (distanceMeters < 0.6) {
+      // If cane detects immediate ground collision hazard (< 0.6m)
       _audioMutex.speak(
         text: "Low hazard underfoot! ${distanceMeters.toStringAsFixed(1)} meters.",
         priority: AudioPriority.level0Critical,
@@ -190,28 +199,46 @@ class SmartWhiteCaneBleService {
   List<DetectedObstacle> fuseObstaclesWithCane({
     required List<DetectedObstacle> cameraObstacles,
   }) {
-    if (_connectionStatus != CaneConnectionStatus.connected || !_groundObstacle) {
+    if (_connectionStatus != CaneConnectionStatus.connected ||
+        (!_groundObstacle && !_groundDropOff)) {
       return cameraObstacles;
     }
 
     final fused = List<DetectedObstacle>.from(cameraObstacles);
-    // Inject ground-level fused obstacle from smart cane
-    fused.add(
-      DetectedObstacle(
-        label: 'ground_obstacle_cane',
-        confidence: 0.98,
-        distanceMeters: _lastUltrasonicDistance,
-        xMin: 0.35,
-        yMin: 0.70,
-        xMax: 0.65,
-        yMax: 1.00,
-        ttcSeconds: _lastUltrasonicDistance / 1.2,
-        priority: _lastUltrasonicDistance < 1.0
-            ? AudioPriority.level0Critical
-            : AudioPriority.level3Context,
-        clockPosition: "12 o'clock",
-      ),
-    );
+    if (_groundDropOff) {
+      fused.add(
+        DetectedObstacle(
+          label: 'ground_drop_off_pothole',
+          confidence: 0.96,
+          distanceMeters: 0.8,
+          xMin: 0.35,
+          yMin: 0.70,
+          xMax: 0.65,
+          yMax: 1.00,
+          ttcSeconds: 0.7,
+          priority: AudioPriority.level0Critical,
+          clockPosition: "12 o'clock",
+        ),
+      );
+    } else if (_groundObstacle) {
+      // Inject ground-level fused obstacle from smart cane
+      fused.add(
+        DetectedObstacle(
+          label: 'ground_obstacle_cane',
+          confidence: 0.98,
+          distanceMeters: _lastUltrasonicDistance,
+          xMin: 0.35,
+          yMin: 0.70,
+          xMax: 0.65,
+          yMax: 1.00,
+          ttcSeconds: _lastUltrasonicDistance / 1.2,
+          priority: _lastUltrasonicDistance < 1.0
+              ? AudioPriority.level0Critical
+              : AudioPriority.level3Context,
+          clockPosition: "12 o'clock",
+        ),
+      );
+    }
     return fused;
   }
 

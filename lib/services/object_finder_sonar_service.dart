@@ -43,7 +43,7 @@ class ObjectFinderSonarService {
   String _activeTargetLabel = "keys";
   bool _isSearching = false;
   bool _wasFoundPreviously = false;
-  DateTime? _lastSpokenGuidanceTime;
+  int _consecutiveMissingFrames = 0;
   ObjectFinderTarget _currentState = ObjectFinderTarget.initial("keys");
 
   final StreamController<ObjectFinderTarget> _stateController =
@@ -67,7 +67,7 @@ class ObjectFinderSonarService {
     _activeTargetLabel = targetLabel.trim().toLowerCase();
     _isSearching = true;
     _wasFoundPreviously = false;
-    _lastSpokenGuidanceTime = null;
+    _consecutiveMissingFrames = 0;
     _currentState = ObjectFinderTarget.initial(_activeTargetLabel);
     _stateController.add(_currentState);
 
@@ -83,7 +83,7 @@ class ObjectFinderSonarService {
   void stopSearch() {
     _isSearching = false;
     _wasFoundPreviously = false;
-    _lastSpokenGuidanceTime = null;
+    _consecutiveMissingFrames = 0;
     _currentState = ObjectFinderTarget.initial(_activeTargetLabel);
     _stateController.add(_currentState);
     _audioMutex.speak(
@@ -111,7 +111,8 @@ class ObjectFinderSonarService {
     }
 
     if (matchedItem == null) {
-      if (_wasFoundPreviously) {
+      _consecutiveMissingFrames++;
+      if (_consecutiveMissingFrames >= 8) {
         _wasFoundPreviously = false;
       }
       _currentState = ObjectFinderTarget(
@@ -127,6 +128,8 @@ class ObjectFinderSonarService {
       _stateController.add(_currentState);
       return _currentState;
     }
+
+    _consecutiveMissingFrames = 0;
 
     // Calculate center offset and alignment score (1.0 = dead center of viewfinder)
     final centerX = (matchedItem.xMin + matchedItem.xMax) / 2.0;
@@ -147,7 +150,7 @@ class ObjectFinderSonarService {
       directionHint = "To your right";
     }
 
-    final labelName = _formatLabel(matchedItem.label.isNotEmpty ? matchedItem.label : _activeTargetLabel);
+    final labelName = _formatLabel(_activeTargetLabel.isNotEmpty ? _activeTargetLabel : matchedItem.label);
     final distStr = matchedItem.distanceMeters.toStringAsFixed(1);
     final clock = matchedItem.clockPosition;
 
@@ -166,12 +169,9 @@ class ObjectFinderSonarService {
 
     _stateController.add(_currentState);
 
-    final now = DateTime.now();
-
-    // 1. First time object is matched/locked on: announce immediately!
+    // 1. Speak ONLY ONCE when object is found (instead of repeating multiple times)
     if (!_wasFoundPreviously) {
       _wasFoundPreviously = true;
-      _lastSpokenGuidanceTime = now;
       _audioMutex.speak(
         text: "$labelName found! Located $directionHint at $clock, $distStr meters away.",
         priority: AudioPriority.level1Safety,
@@ -179,31 +179,9 @@ class ObjectFinderSonarService {
         haptic: true,
         force: true,
       );
-    } else {
-      // 2. Periodic continuous tracking update
-      final timeSinceLast = _lastSpokenGuidanceTime == null
-          ? 9999
-          : now.difference(_lastSpokenGuidanceTime!).inMilliseconds;
-
-      if (timeSinceLast >= 2800) {
-        _lastSpokenGuidanceTime = now;
-        if (matchedItem.distanceMeters < 0.65 && alignmentScore > 0.7) {
-          _audioMutex.speak(
-            text: "$labelName directly in front of you at reach distance. Reach out your hand.",
-            priority: AudioPriority.level1Safety,
-            channelIndex: 3,
-            haptic: true,
-          );
-        } else {
-          _audioMutex.speak(
-            text: "$labelName at $clock, $distStr meters. $directionHint.",
-            priority: AudioPriority.level2Navigation,
-            channelIndex: 3,
-            haptic: false,
-          );
-        }
-      }
     }
+    // No repeated voice announcements while continuously tracking!
+    // The acoustic sonar radar click pings provide continuous, non-verbal spatial feedback.
 
     return _currentState;
   }
@@ -223,45 +201,48 @@ class ObjectFinderSonarService {
       }
     }
 
-    // Comprehensive synonyms and proxy object matches for real-time edge detection
+    // High-accuracy synonyms for target items
     const proxies = <String, List<String>>{
-      'ironbox': ['ironbox', 'iron', 'clothes iron', 'steam iron', 'press', 'appliance', 'toaster', 'hair drier', 'remote', 'mouse'],
-      'iron': ['ironbox', 'iron', 'clothes iron', 'steam iron', 'press', 'appliance', 'toaster', 'hair drier', 'remote', 'mouse'],
-      'charger': ['charger', 'adapter', 'charging cable', 'cable', 'wire', 'plug', 'cord', 'power adapter', 'remote', 'mouse'],
+      'ironbox': ['ironbox', 'iron', 'clothes iron', 'steam iron', 'press'],
+      'iron': ['ironbox', 'iron', 'clothes iron', 'steam iron', 'press'],
+      'charger': ['charger', 'adapter', 'charging cable', 'cable', 'wire', 'plug', 'cord', 'power adapter'],
       'shoes': ['shoes', 'shoe', 'slippers', 'sandals', 'sneakers', 'footwear', 'boots'],
       'shoe': ['shoes', 'shoe', 'slippers', 'sandals', 'sneakers', 'footwear', 'boots'],
-      'medicine': ['medicine', 'pill bottle', 'pills', 'tablets', 'capsules', 'bottle', 'syrup'],
+      'medicine': ['medicine', 'medicine_bottle', 'pill bottle', 'pills', 'tablets', 'capsules', 'bottle', 'syrup'],
       'headphones': ['headphones', 'earphones', 'earbuds', 'headset'],
       'watch': ['watch', 'smartwatch', 'wristwatch', 'clock'],
       'pen': ['pen', 'pencil', 'marker', 'highlighter', 'stationery'],
       'plate': ['plate', 'dish', 'tray', 'saucer', 'bowl'],
       'spoon': ['spoon', 'fork', 'knife', 'cutlery', 'utensil'],
       'fan': ['fan', 'ceiling fan', 'table fan', 'electric fan'],
-      'keys': ['keys', 'key', 'keychain', 'scissors', 'remote', 'mouse', 'cell phone'],
-      'key': ['keys', 'key', 'keychain', 'scissors', 'remote', 'mouse', 'cell phone'],
-      'wallet': ['wallet', 'handbag', 'book', 'cell phone', 'purse', 'billfold', 'card holder'],
+      'keys': ['keys', 'key', 'keychain', 'keyset', 'keyring', 'remote'],
+      'key': ['keys', 'key', 'keychain', 'keyset', 'keyring', 'remote'],
+      'wallet': ['wallet', 'handbag', 'purse', 'billfold', 'card holder'],
       'purse': ['wallet', 'handbag', 'purse', 'backpack'],
-      'white cane': ['white cane', 'white_cane', 'cane', 'umbrella', 'stick', 'walking stick', 'baseball bat'],
-      'white_cane': ['white cane', 'white_cane', 'cane', 'umbrella', 'stick', 'walking stick', 'baseball bat'],
-      'cane': ['white cane', 'white_cane', 'cane', 'umbrella', 'stick', 'walking stick', 'baseball bat'],
-      'glasses': ['glasses', 'spectacles', 'sunglasses', 'reading glasses', 'eyewear', 'remote', 'cell phone', 'cell_phone'],
-      'spectacles': ['glasses', 'spectacles', 'sunglasses', 'reading glasses', 'eyewear', 'remote', 'cell phone', 'cell_phone'],
-      'water bottle': ['water bottle', 'bottle', 'cup', 'glass', 'flask', 'thermos', 'tumbler'],
-      'bottle': ['water bottle', 'bottle', 'cup', 'glass', 'flask', 'thermos', 'tumbler'],
-      'cup': ['cup', 'bottle', 'mug', 'glass', 'tea cup'],
-      'mug': ['cup', 'bottle', 'mug', 'coffee mug'],
+      'white cane': ['white cane', 'white_cane', 'cane', 'walking stick', 'stick'],
+      'white_cane': ['white cane', 'white_cane', 'cane', 'walking stick', 'stick'],
+      'cane': ['white cane', 'white_cane', 'cane', 'walking stick', 'stick'],
+      'glasses': ['glasses', 'spectacles', 'sunglasses', 'reading glasses', 'eyewear'],
+      'spectacles': ['glasses', 'spectacles', 'sunglasses', 'reading glasses', 'eyewear'],
+      'water bottle': ['water bottle', 'bottle', 'flask', 'thermos', 'tumbler'],
+      'bottle': ['water bottle', 'bottle', 'flask', 'thermos', 'tumbler'],
+      'cup': ['cup', 'mug', 'tea cup', 'coffee mug'],
+      'mug': ['cup', 'mug', 'coffee mug'],
       'phone': ['cell phone', 'cell_phone', 'phone', 'telephone', 'mobile', 'smartphone'],
       'cell phone': ['cell phone', 'cell_phone', 'phone', 'telephone', 'mobile', 'smartphone'],
       'cell_phone': ['cell phone', 'cell_phone', 'phone', 'telephone', 'mobile', 'smartphone'],
       'medicine_bottle': ['medicine', 'medicine_bottle', 'pill bottle', 'pills', 'tablets', 'capsules', 'bottle', 'syrup'],
-      'laptop': ['laptop', 'tv', 'keyboard', 'computer', 'screen', 'notebook'],
-      'backpack': ['backpack', 'handbag', 'suitcase', 'bag', 'tote'],
-      'bag': ['backpack', 'handbag', 'suitcase', 'bag', 'tote'],
+      'laptop': ['laptop', 'computer', 'screen', 'notebook'],
+      'backpack': ['backpack', 'handbag', 'bag', 'tote'],
+      'bag': ['backpack', 'handbag', 'bag', 'tote'],
       'chair': ['chair', 'couch', 'bench', 'stool', 'seat', 'armchair'],
       'table': ['table', 'desk', 'dining table', 'counter', 'workstation'],
       'door': ['door', 'doorway', 'entrance', 'gate'],
       'stairs': ['stairs', 'staircase', 'steps'],
-      'book': ['book', 'notebook', 'diary', 'magazine', 'paper'],
+      'book': ['book', 'notebook', 'diary', 'magazine'],
+      'remote': ['remote', 'remote control', 'controller', 'clicker'],
+      'mouse': ['mouse', 'computer mouse'],
+      'keyboard': ['keyboard', 'computer keyboard'],
     };
 
     for (final entry in proxies.entries) {

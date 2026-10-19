@@ -13,10 +13,9 @@ void main() {
       // Verify Header & Brand
       expect(find.text('ORBISNAV'), findsOneWidget);
 
-      // Verify 3 Top-Level Navigation Modes
+      // Verify 2 Top-Level Navigation Modes
       expect(find.text('Safety HUD'), findsOneWidget);
-      expect(find.text('Navigation'), findsOneWidget);
-      expect(find.text('Doc Scan'), findsOneWidget);
+      expect(find.text('Item Sonar'), findsOneWidget);
 
       // Clean unmount
       await tester.pumpWidget(const SizedBox.shrink());
@@ -26,27 +25,7 @@ void main() {
       await tester.pumpWidget(const OrbisNavApp());
       await tester.pump(const Duration(milliseconds: 50));
 
-      // Switch to Tab 1 (Navigation)
-      final navTabFinder = find.byKey(const Key('mode_tab_navigation'));
-      expect(navTabFinder, findsOneWidget);
-      await tester.tap(navTabFinder);
-      await tester.pump(const Duration(milliseconds: 400));
-
-      // Verify Pedestrian & Indoor Mapping cards are rendered
-      expect(find.text('PEDESTRIAN & CROSSWALK VISION'), findsOneWidget);
-      expect(find.text('INDOOR SELF-MAPPING & A* ROUTING'), findsOneWidget);
-
-      // Switch to Tab 2 (Living & Care)
-      final careTabFinder = find.byKey(const Key('mode_tab_living'));
-      expect(careTabFinder, findsOneWidget);
-      await tester.tap(careTabFinder);
-      await tester.pump(const Duration(milliseconds: 400));
-
-      // Verify 1-Tap Trusted Angels Video Call section is rendered
-      expect(find.text('TRUSTED ANGELS CAREGIVER CALL'), findsOneWidget);
-      expect(find.text('DAILY LIVING ASSISTANT'), findsOneWidget);
-
-      // Switch to Tab 3 (Channel 4: Lost Item Sonar)
+      // Switch to Tab 1 (Channel 2: Lost Item Sonar)
       final sonarTabFinder = find.byKey(const Key('mode_tab_sonar'));
       expect(sonarTabFinder, findsOneWidget);
       await tester.tap(sonarTabFinder);
@@ -54,6 +33,15 @@ void main() {
 
       // Verify Lost Item Sonar Radar is rendered
       expect(find.text('LOST ITEM SONAR RADAR'), findsOneWidget);
+
+      // Switch back to Tab 0 (Channel 1: Safety HUD)
+      final safetyTabFinder = find.byKey(const Key('mode_tab_safety'));
+      expect(safetyTabFinder, findsOneWidget);
+      await tester.tap(safetyTabFinder);
+      await tester.pump(const Duration(milliseconds: 400));
+
+      // Verify Safety HUD components are rendered
+      expect(find.text('ORBISNAV'), findsOneWidget);
 
       // Clean unmount
       await tester.pumpWidget(const SizedBox.shrink());

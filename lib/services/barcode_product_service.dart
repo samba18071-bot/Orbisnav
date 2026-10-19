@@ -129,12 +129,13 @@ class BarcodeProductService {
         _httpClient = httpClient ?? http.Client();
 
   /// Process a newly detected barcode string.
-  Future<ScannedProductInfo?> handleBarcodeDetected(String rawCode) async {
+  Future<ScannedProductInfo?> handleBarcodeDetected(String rawCode, {bool force = false}) async {
     final cleanCode = rawCode.trim();
     if (cleanCode.isEmpty) return null;
 
     final now = DateTime.now();
-    if (_lastScannedBarcode == cleanCode &&
+    if (!force &&
+        _lastScannedBarcode == cleanCode &&
         _lastScanTime != null &&
         now.difference(_lastScanTime!).inMilliseconds < 4000) {
       return null; // Debounced
@@ -177,6 +178,7 @@ class BarcodeProductService {
         text: info.summarySpeech,
         priority: AudioPriority.level2Navigation,
         haptic: true,
+        force: force,
       );
 
       return info;

@@ -67,6 +67,12 @@ void main() {
       final fused = caneService.fuseObstaclesWithCane(cameraObstacles: cameraObs);
       expect(fused.length, equals(2));
       expect(fused.any((o) => o.label == 'ground_obstacle_cane'), isTrue);
+
+      // 4. Ingest pothole / drop-off reading (> 3.0 meters sudden ground extension)
+      caneService.ingestUltrasonicReading(3.8);
+      expect(caneService.currentState.hasPotholeOrDropOff, isTrue);
+      final fusedDropOff = caneService.fuseObstaclesWithCane(cameraObstacles: cameraObs);
+      expect(fusedDropOff.any((o) => o.label == 'ground_drop_off_pothole'), isTrue);
     });
 
     test('Smart White Cane handle touchpad gesture navigation', () async {

@@ -249,14 +249,19 @@ class AudioMutexController {
     _activeSpeechController.add(request);
 
     try {
-      final bool success = await _channel.invokeMethod<bool>('speak', {
+      final bool? result = await _channel.invokeMethod<bool>('speak', {
         'text': request.text,
         'priority': request.priority.value,
         'haptic': request.haptic,
         'utteranceId': request.id,
-      }) ?? false;
+      });
 
-      return success;
+      if (result == null || !result) {
+        _onSpeechFinished(request.id);
+        return false;
+      }
+
+      return result;
     } catch (e) {
       _onSpeechFinished(request.id);
       return false;

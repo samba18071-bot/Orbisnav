@@ -255,13 +255,29 @@ class ConversationalVoiceQAService {
       return 'No doorway visible in current angle.';
     }
 
-    // General description query ("What is in front of me?", "Describe scene")
+    // Comprehensive object explanation & optimal safe walking route
+    if (q.contains('explain') ||
+        q.contains('describe') ||
+        q.contains('what is in front') ||
+        q.contains('what do you see') ||
+        q.contains('objects') ||
+        q.contains('route') ||
+        q.contains('safe walking') ||
+        q.contains('path') ||
+        q.contains('walk')) {
+      final descriptions = obstacles.map((o) => o.comprehensiveExplanation).join(' ');
+      final opt = OptimalPathRecommendation.computeOptimalPath(obstacles);
+      return 'Detected ${obstacles.length} ${obstacles.length == 1 ? "object" : "objects"}: $descriptions ${opt.safeWalkingRouteSummary}';
+    }
+
+    // General fallback summary
     final itemsSummary = obstacles
-        .take(3)
+        .take(4)
         .map((o) =>
             '${o.label} at ${o.clockPosition} (${o.distanceMeters.toStringAsFixed(1)}m)')
         .join(', ');
-    return 'In front of you: $itemsSummary.';
+    final opt = OptimalPathRecommendation.computeOptimalPath(obstacles);
+    return 'In front of you: $itemsSummary. ${opt.safeWalkingRouteSummary}';
   }
 
   void dispose() {

@@ -71,6 +71,90 @@ class DetectedObstacle {
     }
     return "$label at $clockPosition, ${distanceMeters.toStringAsFixed(1)} meters.";
   }
+
+  /// Comprehensive natural language explanation for visually impaired users
+  /// explaining what the object is, its precise location, motion characteristics,
+  /// and clear walking advice for safe traversal.
+  String get comprehensiveExplanation {
+    final name = label.toLowerCase();
+    final clock = clockPosition;
+    final dist = distanceMeters.toStringAsFixed(1);
+    final conf = (confidence * 100).toInt();
+
+    String objectNature;
+    if (['person', 'pedestrian'].contains(name)) {
+      objectNature = "A person in your walking path";
+    } else if (['car', 'truck', 'bus', 'motorcycle', 'bicycle'].contains(name)) {
+      objectNature = "A vehicle presenting active traffic risk";
+    } else if (['chair', 'couch', 'bed', 'dining table', 'desk', 'toilet'].contains(name)) {
+      objectNature = "Interior furniture acting as a ground obstacle";
+    } else if (['laptop', 'cell phone', 'keyboard', 'mouse', 'book'].contains(name)) {
+      objectNature = "A personal work device placed on a surface";
+    } else if (['stairs', 'step', 'curb'].contains(name)) {
+      objectNature = "An elevation step requiring careful foot placement";
+    } else if (['door', 'entrance'].contains(name)) {
+      objectNature = "A doorway opening";
+    } else {
+      objectNature = "A $name ($conf% confidence)";
+    }
+
+    String movementDetail;
+    switch (motionType) {
+      case ObjectMotionType.approachingTowardsUser:
+        movementDetail = "moving towards you at ${velocityMps.abs().toStringAsFixed(1)} m/s";
+        break;
+      case ObjectMotionType.movingAwayFromUser:
+        movementDetail = "moving away from you";
+        break;
+      case ObjectMotionType.crossingLeftToRight:
+        movementDetail = "crossing from your left to right";
+        break;
+      case ObjectMotionType.crossingRightToLeft:
+        movementDetail = "crossing from your right to left";
+        break;
+      case ObjectMotionType.overheadHazard:
+        movementDetail = "at head or shoulder elevation";
+        break;
+      case ObjectMotionType.stationaryAhead:
+        movementDetail = "currently stationary";
+        break;
+    }
+
+    String safeAction;
+    if (distanceMeters < 0.8) {
+      if (clock.contains("12")) {
+        safeAction = "Immediate action: Stop and take one step right or left to avoid contact.";
+      } else if (clock.contains("9") || clock.contains("10") || clock.contains("11")) {
+        safeAction = "Keep to your right side to maintain safe clearance.";
+      } else {
+        safeAction = "Keep to your left side to maintain safe clearance.";
+      }
+    } else if (distanceMeters < 2.0) {
+      if (clock.contains("12")) {
+        safeAction = "Safe corridor: Veer slightly right towards 1 or 2 o'clock to bypass.";
+      } else {
+        safeAction = "Safe corridor: Forward walking path is open; maintain current line.";
+      }
+    } else {
+      safeAction = "Safe corridor: Ample walking distance ahead.";
+    }
+
+    return "$objectNature located at $clock, $dist meters away ($movementDetail). $safeAction";
+  }
+
+  /// Compact safe walking bypass recommendation
+  String get bypassRecommendation {
+    if (distanceMeters < 0.8) {
+      if (clockPosition.contains("12")) return "Stop / Step Back or Sideways";
+      if (clockPosition.contains("10") || clockPosition.contains("11") || clockPosition.contains("9")) return "Keep Right";
+      return "Keep Left";
+    }
+    if (distanceMeters < 2.0) {
+      if (clockPosition.contains("12")) return "Veer Right (2 o'clock)";
+      return "Maintain Center Path";
+    }
+    return "Clear Path Ahead";
+  }
 }
 
 /// Real-Time Optimal Navigation Corridor Direction
@@ -96,6 +180,50 @@ class OptimalPathRecommendation {
     required this.clearanceMeters,
     required this.isPathBlocked,
   });
+
+  /// Formats the optimal safe walking route with clearance and step guidance
+  String get safeWalkingRouteSummary {
+    switch (direction) {
+      case OptimalCorridorDirection.straightAhead:
+        return "Optimal Walking Route: Forward corridor at 12 o'clock is clear for ${clearanceMeters.toStringAsFixed(1)}m. Walk straight at normal pace.";
+      case OptimalCorridorDirection.veerLeft:
+        return "Optimal Walking Route: Veer left towards 10 o'clock. Safe corridor open for ${clearanceMeters.toStringAsFixed(1)}m to bypass center obstacle.";
+      case OptimalCorridorDirection.veerRight:
+        return "Optimal Walking Route: Veer right towards 2 o'clock. Safe corridor open for ${clearanceMeters.toStringAsFixed(1)}m to bypass center obstacle.";
+      case OptimalCorridorDirection.blockedHold:
+        return "Optimal Walking Route: Path fully blocked (${clearanceMeters.toStringAsFixed(1)}m clearance). Stop and wait or turn around.";
+    }
+  }
+
+  /// Step-by-step pedestrian walking advice
+  List<String> get stepByStepGuidance {
+    switch (direction) {
+      case OptimalCorridorDirection.straightAhead:
+        return [
+          "Maintain current heading forward along 12 o'clock corridor.",
+          "Direct path has ${clearanceMeters.toStringAsFixed(1)}m collision-free clearance ahead.",
+          "Walking speed: Natural, unobstructed stride.",
+        ];
+      case OptimalCorridorDirection.veerLeft:
+        return [
+          "Shift trajectory 15° to the left (10 o'clock vector).",
+          "Take 1 to 2 paces to your left to circumvent central obstacle.",
+          "Corridor provides ${clearanceMeters.toStringAsFixed(1)}m of safe clearance.",
+        ];
+      case OptimalCorridorDirection.veerRight:
+        return [
+          "Shift trajectory 15° to the right (2 o'clock vector).",
+          "Take 1 to 2 paces to your right to circumvent central obstacle.",
+          "Corridor provides ${clearanceMeters.toStringAsFixed(1)}m of safe clearance.",
+        ];
+      case OptimalCorridorDirection.blockedHold:
+        return [
+          "Halt immediately — forward and flank paths are obstructed.",
+          "Nearest barrier is within ${clearanceMeters.toStringAsFixed(1)}m buffer.",
+          "Use white cane or rotate 90° to acquire alternate open path.",
+        ];
+    }
+  }
 
   /// Computes the optimal collision-free clearance path from active detected obstacles
   static OptimalPathRecommendation computeOptimalPath(List<DetectedObstacle> obstacles) {

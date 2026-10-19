@@ -30,7 +30,7 @@ class _PreprocessedData {
 /// Top-level isolate worker to decode, letterbox, and normalize camera frames without blocking UI thread
 _PreprocessedData _isolateLetterboxPreprocess(Uint8List jpegBytes) {
   const int targetSize = 320;
-  final rawImage = img.decodeImage(jpegBytes);
+  var rawImage = img.decodeImage(jpegBytes);
   if (rawImage == null) {
     return _PreprocessedData(
       tensor: List.generate(
@@ -47,6 +47,7 @@ _PreprocessedData _isolateLetterboxPreprocess(Uint8List jpegBytes) {
       scaledH: targetSize.toDouble(),
     );
   }
+  rawImage = img.bakeOrientation(rawImage);
 
   final int origW = rawImage.width;
   final int origH = rawImage.height;
@@ -160,9 +161,9 @@ class OnDeviceObstacleDetector {
 
   // Calibrated focal length ratio for mobile smartphone cameras (~68° vertical FOV)
   static const double _focalLengthRatio = 1.15;
-  static const double _defaultConfidenceThreshold = 0.26;
-  static const double _personConfidenceThreshold = 0.32;
-  static const double _smallItemConfidenceThreshold = 0.35;
+  static const double _defaultConfidenceThreshold = 0.22;
+  static const double _personConfidenceThreshold = 0.25;
+  static const double _smallItemConfidenceThreshold = 0.26;
   static const double _sameClassIouThreshold = 0.45;
   static const double _crossClassIouThreshold = 0.72;
 
@@ -306,6 +307,8 @@ class OnDeviceObstacleDetector {
   // Anti-repetition debounced speech tracking
   final Map<String, DateTime> _announcedObstacles = {};
   final Map<String, double> _announcedDistances = {};
+  final Map<String, DateTime> _announcedPersonMotions = {};
+  final Map<String, String> _announcedPersonMotionKeys = {};
   bool _wasHazardSpoken = false;
 
   final StreamController<OnlineDetectionCycleResult> _resultsController =
@@ -357,6 +360,8 @@ class OnDeviceObstacleDetector {
   void forceRescan() {
     _announcedObstacles.clear();
     _announcedDistances.clear();
+    _announcedPersonMotions.clear();
+    _announcedPersonMotionKeys.clear();
     _temporalTrackCount.clear();
     _wasHazardSpoken = false;
   }
@@ -478,8 +483,8 @@ class OnDeviceObstacleDetector {
           final currentCount = prevCount + 1;
           _temporalTrackCount[trackKey] = currentCount;
 
-          // Require 2 consecutive frames OR solid single-frame confidence (>= 0.40) to confirm
-          if (currentCount < 2 && cand.score < 0.40) {
+          // Responsive detection: confirm immediately if confidence >= 0.28, or on second frame
+          if (currentCount < 2 && cand.score < 0.28) {
             continue;
           }
 
@@ -725,9 +730,50 @@ class OnDeviceObstacleDetector {
         _wasHazardSpoken = false;
         _announcedObstacles.clear();
         _announcedDistances.clear();
+        _announcedPersonMotions.clear();
+        _announcedPersonMotionKeys.clear();
         AudioMutexController().notifyHazardCleared();
       }
       return;
+    }
+
+    // 1. Dynamic Person Movement Voice Announcement
+    // Tell the movements of any detected person through voice in Safety HUD
+    final personObs = cycle.obstacles.where((o) => o.label.toLowerCase() == "person").firstOrNull;
+    if (personObs != null && personObs.distanceMeters <= 5.0) {
+      final motionKey = "${personObs.motionType.name}_${personObs.clockPosition}";
+      final lastSpokenTime = _announcedPersonMotions[personObs.label];
+      final lastMotionKey = _announcedPersonMotionKeys[personObs.label];
+      final elapsedSec = lastSpokenTime != null ? now.difference(lastSpokenTime).inSeconds : 999;
+
+      bool shouldAnnouncePerson = false;
+      // Announce immediately if new or if movement state changed (e.g. was standing, now walking towards you or walking across)
+      if (lastMotionKey == null || (lastMotionKey != motionKey && elapsedSec >= 3)) {
+        shouldAnnouncePerson = true;
+      } else if (elapsedSec >= 7) {
+        shouldAnnouncePerson = true;
+      }
+
+      if (shouldAnnouncePerson) {
+        _announcedPersonMotions[personObs.label] = now;
+        _announcedPersonMotionKeys[personObs.label] = motionKey;
+        _wasHazardSpoken = true;
+
+        String personSpeech = "${personObs.detailedDescription} at ${personObs.clockPosition}, ${personObs.distanceMeters.toStringAsFixed(1)} meters.";
+        if (cycle.optimalPath.isPathBlocked && personObs.distanceMeters < 2.5) {
+          personSpeech = "$personSpeech ${cycle.optimalPath.voiceInstruction}";
+        }
+
+        AudioMutexController().speak(
+          text: personSpeech,
+          priority: (personObs.motionType == ObjectMotionType.approachingTowardsUser && personObs.distanceMeters < 2.0)
+              ? AudioPriority.level0Critical
+              : AudioPriority.level1Safety,
+          channelIndex: 0,
+          haptic: personObs.motionType == ObjectMotionType.approachingTowardsUser,
+        );
+        return;
+      }
     }
 
     final topHazard = cycle.highestHazard ?? cycle.obstacles.first;
