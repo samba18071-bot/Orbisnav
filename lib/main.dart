@@ -24,6 +24,7 @@ import 'services/smart_cane_ble_service.dart';
 import 'services/smart_glasses_bridge_service.dart';
 import 'controllers/eyes_free_gesture_controller.dart';
 import 'services/sensory_haptic_service.dart';
+import 'ui/views/omni_channel_camera_screen.dart';
 
 List<CameraDescription> _cameras = [];
 
@@ -970,7 +971,18 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                 ],
               ),
             ),
-          )
+          ),
+          IconButton(
+            icon: const Icon(Icons.auto_awesome, color: Color(0xFF00E5FF)),
+            tooltip: "Open Single Omni-Channel Visual Cortex",
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => OmniChannelCameraScreen(cameras: _cameras),
+                ),
+              );
+            },
+          ),
         ],
       ),
       body: GestureDetector(
