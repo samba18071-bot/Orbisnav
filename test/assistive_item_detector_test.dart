@@ -4,7 +4,7 @@ import 'package:orbisnav/services/assistive_item_detector.dart';
 
 void main() {
   test('AssistiveItemDetector detects glasses from camera viewfinder crop', () async {
-    final file = File('/Users/boddutulasisambasivanaidu/.gemini/antigravity-ide/brain/7066e997-1240-4645-94d7-87b16106caac/scratch/viewfinder_crop.png');
+    final file = File('test_assets/viewfinder_crop.png');
     if (!await file.exists()) {
       return;
     }
@@ -19,7 +19,7 @@ void main() {
   });
 
   test('AssistiveItemDetector detects universal open-vocabulary objects in camera crop', () async {
-    final file = File('/Users/boddutulasisambasivanaidu/.gemini/antigravity-ide/brain/7066e997-1240-4645-94d7-87b16106caac/scratch/viewfinder_crop.png');
+    final file = File('test_assets/viewfinder_crop.png');
     if (!await file.exists()) {
       return;
     }
