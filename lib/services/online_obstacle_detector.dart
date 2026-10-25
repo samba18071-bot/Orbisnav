@@ -72,6 +72,9 @@ class DetectedObstacle {
     return "$label at $clockPosition, ${distanceMeters.toStringAsFixed(1)} meters.";
   }
 
+  /// Concise object name, position, and distance for fast, easy navigation cues (detailed narration in Scene Analyser)
+  String get conciseSpeech => "$label at $clockPosition, ${distanceMeters.toStringAsFixed(1)} meters.";
+
   /// Comprehensive natural language explanation for visually impaired users
   /// explaining what the object is, its precise location, motion characteristics,
   /// and clear walking advice for safe traversal.
@@ -79,23 +82,36 @@ class DetectedObstacle {
     final name = label.toLowerCase();
     final clock = clockPosition;
     final dist = distanceMeters.toStringAsFixed(1);
-    final conf = (confidence * 100).toInt();
 
     String objectNature;
     if (['person', 'pedestrian'].contains(name)) {
       objectNature = "A person in your walking path";
     } else if (['car', 'truck', 'bus', 'motorcycle', 'bicycle'].contains(name)) {
       objectNature = "A vehicle presenting active traffic risk";
-    } else if (['chair', 'couch', 'bed', 'dining table', 'desk', 'toilet'].contains(name)) {
-      objectNature = "Interior furniture acting as a ground obstacle";
+    } else if (['chair', 'couch', 'sofa', 'armchair'].contains(name)) {
+      objectNature = "A seating chair with protruding legs";
+    } else if (['dining table', 'desk', 'table'].contains(name)) {
+      objectNature = "A table blocking the walking corridor at waist level";
+    } else if (['bed'].contains(name)) {
+      objectNature = "A bed acting as a low ground obstacle";
+    } else if (['toilet', 'sink'].contains(name)) {
+      objectNature = "A bathroom fixture directly in front of you";
+    } else if (['stairs', 'step', 'curb', 'escalator'].contains(name)) {
+      objectNature = "An elevation step change requiring careful foot placement";
+    } else if (['door', 'entrance'].contains(name)) {
+      objectNature = "A doorway opening for passage";
+    } else if (['pole', 'post', 'tree', 'traffic light', 'fire hydrant'].contains(name)) {
+      objectNature = "A vertical street obstacle in the walking envelope";
+    } else if (['dog', 'cat', 'animal', 'pet'].contains(name)) {
+      objectNature = "A domestic animal moving at floor level";
+    } else if (['bottle', 'cup', 'glass'].contains(name)) {
+      objectNature = "A beverage container placed on a surface";
+    } else if (['backpack', 'handbag', 'suitcase', 'bag'].contains(name)) {
+      objectNature = "Luggage or a bag resting in the walking area";
     } else if (['laptop', 'cell phone', 'keyboard', 'mouse', 'book'].contains(name)) {
       objectNature = "A personal work device placed on a surface";
-    } else if (['stairs', 'step', 'curb'].contains(name)) {
-      objectNature = "An elevation step requiring careful foot placement";
-    } else if (['door', 'entrance'].contains(name)) {
-      objectNature = "A doorway opening";
     } else {
-      objectNature = "A $name ($conf% confidence)";
+      objectNature = "A $name";
     }
 
     String movementDetail;
@@ -142,7 +158,71 @@ class DetectedObstacle {
     return "$objectNature located at $clock, $dist meters away ($movementDetail). $safeAction";
   }
 
+  /// Natural language description of the obstacle (nature, clock position, distance, and movement)
+  /// Used for obstacles > 1.5m away to inform the blind user of their surroundings without intrusive steering advice.
+  String get obstacleDescription {
+    final name = label.toLowerCase();
+    final clock = clockPosition;
+    final dist = distanceMeters.toStringAsFixed(1);
+
+    String objectNature;
+    if (['person', 'pedestrian'].contains(name)) {
+      objectNature = "A person in your walking path";
+    } else if (['car', 'truck', 'bus', 'motorcycle', 'bicycle'].contains(name)) {
+      objectNature = "A vehicle presenting active traffic risk";
+    } else if (['chair', 'couch', 'sofa', 'armchair'].contains(name)) {
+      objectNature = "A seating chair with protruding legs";
+    } else if (['dining table', 'desk', 'table'].contains(name)) {
+      objectNature = "A table blocking the walking corridor at waist level";
+    } else if (['bed'].contains(name)) {
+      objectNature = "A bed acting as a low ground obstacle";
+    } else if (['toilet', 'sink'].contains(name)) {
+      objectNature = "A bathroom fixture directly in front of you";
+    } else if (['stairs', 'step', 'curb', 'escalator'].contains(name)) {
+      objectNature = "An elevation step change requiring careful foot placement";
+    } else if (['door', 'entrance'].contains(name)) {
+      objectNature = "A doorway opening for passage";
+    } else if (['pole', 'post', 'tree', 'traffic light', 'fire hydrant'].contains(name)) {
+      objectNature = "A vertical street obstacle in the walking envelope";
+    } else if (['dog', 'cat', 'animal', 'pet'].contains(name)) {
+      objectNature = "A domestic animal moving at floor level";
+    } else if (['bottle', 'cup', 'glass'].contains(name)) {
+      objectNature = "A beverage container placed on a surface";
+    } else if (['backpack', 'handbag', 'suitcase', 'bag'].contains(name)) {
+      objectNature = "Luggage or a bag resting in the walking area";
+    } else if (['laptop', 'cell phone', 'keyboard', 'mouse', 'book'].contains(name)) {
+      objectNature = "A personal work device placed on a surface";
+    } else {
+      objectNature = "A $name";
+    }
+
+    String movementDetail;
+    switch (motionType) {
+      case ObjectMotionType.approachingTowardsUser:
+        movementDetail = "moving towards you at ${velocityMps.abs().toStringAsFixed(1)} m/s";
+        break;
+      case ObjectMotionType.movingAwayFromUser:
+        movementDetail = "moving away from you";
+        break;
+      case ObjectMotionType.crossingLeftToRight:
+        movementDetail = "crossing from your left to right";
+        break;
+      case ObjectMotionType.crossingRightToLeft:
+        movementDetail = "crossing from your right to left";
+        break;
+      case ObjectMotionType.overheadHazard:
+        movementDetail = "at head or shoulder elevation";
+        break;
+      case ObjectMotionType.stationaryAhead:
+        movementDetail = "currently stationary";
+        break;
+    }
+
+    return "$objectNature located at $clock, $dist meters away ($movementDetail).";
+  }
+
   /// Compact safe walking bypass recommendation
+
   String get bypassRecommendation {
     if (distanceMeters < 0.8) {
       if (clockPosition.contains("12")) return "Stop / Step Back or Sideways";
@@ -245,13 +325,14 @@ class OptimalPathRecommendation {
       final normX = (obs.xMin + obs.xMax) / 2.0;
       final dist = obs.distanceMeters;
 
-      if (normX < 0.38 || obs.clockPosition.contains("9") || obs.clockPosition.contains("10")) {
+      if (normX < 0.38 || obs.clockPosition == "9 o'clock" || obs.clockPosition == "10 o'clock") {
         if (dist < leftClearance) leftClearance = dist;
-      } else if (normX > 0.62 || obs.clockPosition.contains("2") || obs.clockPosition.contains("3")) {
+      } else if (normX > 0.62 || obs.clockPosition == "2 o'clock" || obs.clockPosition == "3 o'clock") {
         if (dist < rightClearance) rightClearance = dist;
       } else {
         if (dist < centerClearance) centerClearance = dist;
       }
+
     }
 
     // 1. Center direct path blocked or narrowed (< 2.5m)

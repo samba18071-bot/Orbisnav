@@ -47,6 +47,21 @@ class SpatialBinauralEarconService {
     required DetectedObstacle obstacle,
     required double estimatedElevationMeters,
   }) {
+    // If exclusive scene explanation is active, suppress earcons so user exclusively hears the AI scene analyser
+    if (AudioMutexController().isSceneExplanationExclusive) {
+      final cue = SpatialEarconCue(
+        zone: HazardElevationZone.torsoLevel,
+        panStereo: 0.0,
+        pitchMultiplier: 1.0,
+        pulseCount: 0,
+        label: obstacle.label,
+        distanceMeters: obstacle.distanceMeters,
+        timestamp: DateTime.now(),
+      );
+      _lastCue = cue;
+      return cue;
+    }
+
     // 1. Determine Vertical Hazard Zone
     final HazardElevationZone zone;
     final double pitch;

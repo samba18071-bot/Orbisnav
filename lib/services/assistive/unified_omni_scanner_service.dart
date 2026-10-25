@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'omni_vision_frame_analyzer.dart';
 
 // --- Architectural Enums & Service Contracts ---
 
@@ -135,6 +136,15 @@ class UnifiedOmniScannerService extends ChangeNotifier {
 
   String _statusMessage = "Ready to scan document, currency, or barcode.";
   String get statusMessage => _statusMessage;
+
+  BarcodeDetectionResult? _latestBarcodeResult;
+  BarcodeDetectionResult? get latestBarcodeResult => _latestBarcodeResult;
+
+  CurrencyDetectionResult? _latestCurrencyResult;
+  CurrencyDetectionResult? get latestCurrencyResult => _latestCurrencyResult;
+
+  String? _latestDocumentSummary;
+  String? get latestDocumentSummary => _latestDocumentSummary;
 
   // Phase 3: 800ms Sliding-Window Debounce Registry
   final Map<String, DateTime> _debounceRegistry = {};
@@ -301,19 +311,12 @@ class UnifiedOmniScannerService extends ChangeNotifier {
 
     _isProcessingFrame = true;
     try {
-      // Phase 2 IMU Orientation Audit: Pitch exceeding 30° downward
-      if (imuPitchDegrees < -30.0) {
-        _docStableSince = null;
-        await HapticFeedback.mediumImpact();
-        await _throttledGuidanceSpeech("Tilt phone up.");
-        return;
-      }
-
       // -----------------------------------------------------------------------
       // 1. BARCODE PRODUCT SCANNER (Fastest Priority Cascade)
       // -----------------------------------------------------------------------
       final barcodeHit = await _barcodeService.detectAndLookup(yuv420Frame);
       if (barcodeHit != null) {
+        _latestBarcodeResult = barcodeHit;
         _resetTrackers();
         final debounceKey = "BARCODE_${barcodeHit.code}";
         if (!_isDebounced(debounceKey)) {
@@ -332,10 +335,11 @@ class UnifiedOmniScannerService extends ChangeNotifier {
       }
 
       // -----------------------------------------------------------------------
-      // 2. CURRENCY BANKNOTE RECOGNIZER (3-Frame Confidence Gate >= 0.88)
+      // 2. CURRENCY BANKNOTE RECOGNIZER (Confidence Gate)
       // -----------------------------------------------------------------------
       final currencyHit = await _currencyService.classifyBanknote(yuv420Frame);
       if (currencyHit != null && currencyHit.confidence >= kMinCurrencyConfidence) {
+        _latestCurrencyResult = currencyHit;
         _docStableSince = null;
         final key =
             "${currencyHit.denomination}_${currencyHit.currencyCode}_${currencyHit.orientation}";
@@ -386,18 +390,13 @@ class UnifiedOmniScannerService extends ChangeNotifier {
 
       _setMode(
         OmniScanMode.documentFraming,
-        docAudit.audioGuidancePrompt ?? "Aligning document. Hold steady for 500ms...",
+        docAudit.audioGuidancePrompt ?? "Document in view. Hold steady...",
       );
-
-      if (!docAudit.allFourCornersVisible || !docAudit.aspectAndTiltValid) {
-        _docStableSince = null;
-        if (docAudit.audioGuidancePrompt != null) {
-          await _throttledGuidanceSpeech(docAudit.audioGuidancePrompt!);
-        }
-        return;
+      if (docAudit.audioGuidancePrompt != null) {
+        await _throttledGuidanceSpeech(docAudit.audioGuidancePrompt!);
       }
 
-      // Figure 4: Hold stable for 500ms -> Auto-Capture High-Res Frame & Trigger Batch OCR
+      // Relaxed framing check: allow document capture if text/contours are present
       final now = DateTime.now();
       _docStableSince ??= now;
 
@@ -444,6 +443,7 @@ class UnifiedOmniScannerService extends ChangeNotifier {
     }
 
     final summaryText = await _fetchCloudOrLocalSummary(extractedText);
+    _latestDocumentSummary = summaryText;
 
     // Retain visual & textual context for ConversationalVoiceQaService follow-up questions
     _voiceQaService.seedVisualContext(extractedText, summaryText);
@@ -470,6 +470,14 @@ class UnifiedOmniScannerService extends ChangeNotifier {
   }
 
   Future<String> _fetchCloudOrLocalSummary(String ocrText) async {
+    // If backend URL points to localhost or 127.0.0.1 (not reachable on standalone mobile device),
+    // immediately use the standalone direct cloud/edge vision analyzer.
+    if (_cloudBackendBaseUrl.contains("127.0.0.1") ||
+        _cloudBackendBaseUrl.contains("localhost") ||
+        _cloudBackendBaseUrl.isEmpty) {
+      return await OmniVisionFrameAnalyzer().summarizeDocument(ocrText);
+    }
+
     try {
       final uri = Uri.parse("$_cloudBackendBaseUrl/api/v1/omni-scan/summarize");
       final response = await _httpClient
@@ -484,24 +492,20 @@ class UnifiedOmniScannerService extends ChangeNotifier {
               "max_sentences": 4,
             }),
           )
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 4));
 
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-        return decoded["spoken_summary"] as String? ??
-            decoded["executive_summary"] as String? ??
-            _buildOfflineSummary(ocrText);
+        final summary = decoded["spoken_summary"] as String? ??
+            decoded["executive_summary"] as String?;
+        if (summary != null && summary.trim().isNotEmpty) {
+          return summary.trim();
+        }
       }
-      return _buildOfflineSummary(ocrText);
+      return await OmniVisionFrameAnalyzer().summarizeDocument(ocrText);
     } catch (_) {
-      return _buildOfflineSummary(ocrText);
+      return await OmniVisionFrameAnalyzer().summarizeDocument(ocrText);
     }
-  }
-
-  String _buildOfflineSummary(String rawText) {
-    final cleaned = rawText.replaceAll(RegExp(r'\s+'), ' ').trim();
-    final sentences = cleaned.split(RegExp(r'(?<=[.!?])\s+'));
-    return "Offline Document Summary: ${sentences.take(3).join(' ')}";
   }
 
   bool _isDebounced(String key) {

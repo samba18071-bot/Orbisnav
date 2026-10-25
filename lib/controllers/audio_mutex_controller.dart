@@ -81,6 +81,62 @@ class AudioMutexController {
   AudioPriority? get currentActivePriority => _currentActiveRequest?.priority;
   bool get isSpeaking => _currentActiveRequest != null;
 
+  // Exclusive AI Scene Explanation speech lock
+  bool _isSceneExplanationExclusive = false;
+  bool get isSceneExplanationExclusive => _isSceneExplanationExclusive;
+
+  /// Sets whether exclusive scene explanation speech mode is active.
+  /// When active, ALL other speech (including critical safety hazard alerts, earcons,
+  /// and navigation cues) is suppressed so that the user exclusively hears the AI scene analyser.
+  void setSceneExplanationExclusive(bool exclusive) {
+    _isSceneExplanationExclusive = exclusive;
+    if (exclusive) {
+      _queue.clear();
+      _suspendedContext = null;
+      _hazardClearanceTimer?.cancel();
+    }
+  }
+
+  /// Speaks the AI scene analyser explanation exclusively.
+  /// Guarantees that no other sound, speech, or hazard announcement interrupts
+  /// until the explanation has completely finished.
+  Future<bool> speakSceneExplanation(String text) async {
+    setSceneExplanationExclusive(true);
+    await hardStop();
+
+    final request = AudioRequest(
+      id: "scene_explanation_${DateTime.now().millisecondsSinceEpoch}",
+      text: text,
+      priority: AudioPriority.level0Critical,
+      channelIndex: _activeChannelIndex,
+      haptic: false,
+    );
+
+    try {
+      final success = await _executeSpeech(request);
+      if (!success) {
+        setSceneExplanationExclusive(false);
+        return false;
+      }
+
+      // Estimate utterance duration (~135 words per minute ≈ 2.25 words/sec)
+      final wordCount = text.trim().split(RegExp(r'\s+')).length;
+      final estimatedMillis = ((wordCount / 2.25) * 1000).toInt().clamp(2500, 30000);
+
+      // Wait for native completion callback or fallback timeout
+      await request.completer.future.timeout(
+        Duration(milliseconds: estimatedMillis + 1500),
+        onTimeout: () => true,
+      );
+      return true;
+    } catch (e) {
+      debugPrint("[AudioMutex] Scene explanation speech error: $e");
+      return false;
+    } finally {
+      setSceneExplanationExclusive(false);
+    }
+  }
+
   // Active Channel / Tab tracking (0: Safety HUD, 1: Nav, 2: Doc Scan / Lens, 3: Lost Item Sonar)
   int _activeChannelIndex = 0;
   int get activeChannelIndex => _activeChannelIndex;
@@ -180,6 +236,11 @@ class AudioMutexController {
     bool haptic = true,
     bool force = false,
   }) async {
+    // If exclusive scene explanation mode is active, suppress all other speech so user exclusively hears the AI Scene Analyser!
+    if (_isSceneExplanationExclusive) {
+      return false;
+    }
+
     final now = DateTime.now();
     final normalized = _normalizeForDeduplication(text);
     if (!force &&

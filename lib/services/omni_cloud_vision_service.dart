@@ -91,7 +91,7 @@ AUTO-ADAPTIVE BEHAVIOR (Based on what is most prominent in the frame or user pro
     final query = optionalUserQuery?.trim();
     final defaultPrompt = query != null && query.isNotEmpty
         ? query
-        : "Describe the view in front of me with clock-face directions, people, hazards, and currency.";
+        : "Explain the objects in front of me, their hazard context, and provide actionable safe walking advice with clock-face directions.";
 
     return queryVisualCortex(
       imageBytes: frameBytes,

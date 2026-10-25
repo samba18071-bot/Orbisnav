@@ -371,6 +371,7 @@ class OnDeviceObstacleDetector {
     Uint8List jpegBytes, {
     double devicePitchDeg = 0.0,
     bool speakGovernance = true,
+    bool publishStream = true,
   }) async {
     if (!_isEnabled || _isProcessing || !_isInitialized) {
       return OnlineDetectionCycleResult(
@@ -534,7 +535,9 @@ class OnDeviceObstacleDetector {
             : "Standalone On-Device AI: ${enrichedObstacles.length} Obstacle${enrichedObstacles.length > 1 ? 's' : ''} (${latencyMs}ms)",
       );
 
-      _resultsController.add(cycleResult);
+      if (publishStream) {
+        _resultsController.add(cycleResult);
+      }
 
       // Enforce Speak-Once Audio Mutex Governance
       if (speakGovernance) {
@@ -723,6 +726,11 @@ class OnDeviceObstacleDetector {
 
   /// Strict Voice Governance: Speaks obstacles once with debouncing and clearance notifications
   void _enforceSpeechGovernance(OnlineDetectionCycleResult cycle) {
+    // If exclusive scene explanation is active, skip all obstacle speech so user exclusively hears the AI scene analyser
+    if (AudioMutexController().isSceneExplanationExclusive) {
+      return;
+    }
+
     final now = DateTime.now();
 
     if (cycle.obstacles.isEmpty) {
@@ -759,18 +767,22 @@ class OnDeviceObstacleDetector {
         _announcedPersonMotionKeys[personObs.label] = motionKey;
         _wasHazardSpoken = true;
 
-        String personSpeech = "${personObs.detailedDescription} at ${personObs.clockPosition}, ${personObs.distanceMeters.toStringAsFixed(1)} meters.";
-        if (cycle.optimalPath.isPathBlocked && personObs.distanceMeters < 2.5) {
-          personSpeech = "$personSpeech ${cycle.optimalPath.voiceInstruction}";
-        }
+        // Concise voice cue: tell object name and optimal route (detailed narration in Scene Analyser)
+        final personMotionDesc = personObs.motionType == ObjectMotionType.approachingTowardsUser
+            ? "Person moving towards you at ${personObs.clockPosition}, ${personObs.distanceMeters.toStringAsFixed(1)} meters."
+            : "Person at ${personObs.clockPosition}, ${personObs.distanceMeters.toStringAsFixed(1)} meters.";
+        final personSpeech = "$personMotionDesc Optimal route: ${cycle.optimalPath.voiceInstruction}.";
 
         AudioMutexController().speak(
           text: personSpeech,
-          priority: (personObs.motionType == ObjectMotionType.approachingTowardsUser && personObs.distanceMeters < 2.0)
+          priority: (personObs.distanceMeters <= 1.5 ||
+                  (personObs.motionType == ObjectMotionType.approachingTowardsUser &&
+                      personObs.distanceMeters < 2.0))
               ? AudioPriority.level0Critical
               : AudioPriority.level1Safety,
           channelIndex: 0,
-          haptic: personObs.motionType == ObjectMotionType.approachingTowardsUser,
+          haptic: personObs.distanceMeters <= 1.5 ||
+              personObs.motionType == ObjectMotionType.approachingTowardsUser,
         );
         return;
       }
@@ -778,16 +790,18 @@ class OnDeviceObstacleDetector {
 
     final topHazard = cycle.highestHazard ?? cycle.obstacles.first;
 
-    // Real-Time Motion Gate: Only speak if dynamic motion or urgent near-field collision
+    // Real-Time Motion & Path Gate: Speak if dynamic motion, near-field hazard (<=1.5m), or in walking path
     final isDynamicMotion = topHazard.motionType == ObjectMotionType.approachingTowardsUser ||
         topHazard.motionType == ObjectMotionType.crossingLeftToRight ||
         topHazard.motionType == ObjectMotionType.crossingRightToLeft ||
         topHazard.motionType == ObjectMotionType.overheadHazard;
-    final isUrgentNearCollision = topHazard.distanceMeters <= 1.2 &&
-        (topHazard.clockPosition == "12 o'clock" || topHazard.clockPosition == "11 o'clock" || topHazard.clockPosition == "1 o'clock");
+    final isNearField = topHazard.distanceMeters <= 1.5;
+    final isInWalkingPath = (topHazard.clockPosition == "12 o'clock" ||
+        topHazard.clockPosition == "11 o'clock" ||
+        topHazard.clockPosition == "1 o'clock");
 
-    // Suppress speaking stationary background objects (e.g. bed, table, chair, wall at distance)
-    if (!isDynamicMotion && !isUrgentNearCollision) {
+    // Only speak obstacles that are moving, in near-field, or directly in forward walking path
+    if (!isDynamicMotion && !isNearField && !isInWalkingPath) {
       return;
     }
 
@@ -803,12 +817,12 @@ class OnDeviceObstacleDetector {
       final elapsedSec = now.difference(lastSpoken).inSeconds;
       final distDelta = (lastDist != null) ? (lastDist - topHazard.distanceMeters).abs() : 99.0;
 
-      // Critical hazards (<1.2m) speak if closer by 0.6m or 8s elapsed
-      if (topHazard.priority == AudioPriority.level0Critical && (elapsedSec >= 8 || distDelta >= 0.6)) {
+      // Obstacles in close proximity (<= 1.5m) update fast: 4s elapsed or 0.4m closer
+      if (topHazard.distanceMeters <= 1.5 && (elapsedSec >= 4 || distDelta >= 0.4)) {
         shouldSpeak = true;
       } 
-      // Safety moving items speak if closer by >= 1.2m or 15s cooldown elapsed
-      else if (topHazard.priority == AudioPriority.level1Safety && (elapsedSec >= 15 || distDelta >= 1.2)) {
+      // Obstacles > 1.5m (description) update every 9s or if distance changes by 1.0m
+      else if (topHazard.distanceMeters > 1.5 && (elapsedSec >= 9 || distDelta >= 1.0)) {
         shouldSpeak = true;
       }
     }
@@ -818,21 +832,22 @@ class OnDeviceObstacleDetector {
       _announcedDistances[key] = topHazard.distanceMeters;
       _wasHazardSpoken = true;
 
-      String speechText = topHazard.priority == AudioPriority.level0Critical
-          ? "Caution! ${topHazard.speechAnnouncement}"
-          : topHazard.speechAnnouncement;
-
-      // Real-Time Optimal Path Navigation Voice Integration
-      if (cycle.optimalPath.isPathBlocked && topHazard.distanceMeters < 2.5) {
-        speechText = "$speechText ${cycle.optimalPath.voiceInstruction}";
-      }
+      // Concise voice cue: tell object name and optimal route (detailed narration in Scene Analyser)
+      final optInstruction = cycle.optimalPath.voiceInstruction;
+      final isCritical = topHazard.priority == AudioPriority.level0Critical || topHazard.distanceMeters <= 1.0;
+      final prefix = isCritical ? "Caution! " : "";
+      final speechText = "$prefix${topHazard.label} at ${topHazard.clockPosition}, ${topHazard.distanceMeters.toStringAsFixed(1)} meters. Optimal route: $optInstruction.";
 
       AudioMutexController().speak(
         text: speechText,
-        priority: topHazard.priority,
-        haptic: topHazard.priority == AudioPriority.level0Critical,
+        priority: (topHazard.distanceMeters <= 1.5)
+            ? AudioPriority.level0Critical
+            : AudioPriority.level1Safety,
+        channelIndex: 0,
+        haptic: topHazard.distanceMeters <= 1.5,
       );
     }
+
   }
 
   void dispose() {

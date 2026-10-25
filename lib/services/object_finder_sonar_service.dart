@@ -13,6 +13,9 @@ class ObjectFinderTarget {
   final double stereoPan; // -1.0 left to +1.0 right
   final String guidanceCue;
 
+  final int totalFoundCount;
+  final List<DetectedObstacle> secondaryMatches;
+
   const ObjectFinderTarget({
     required this.targetLabel,
     required this.isFound,
@@ -22,6 +25,8 @@ class ObjectFinderTarget {
     required this.sonarPingIntervalMs,
     required this.stereoPan,
     required this.guidanceCue,
+    this.totalFoundCount = 0,
+    this.secondaryMatches = const [],
   });
 
   factory ObjectFinderTarget.initial(String label) => ObjectFinderTarget(
@@ -33,6 +38,8 @@ class ObjectFinderTarget {
         sonarPingIntervalMs: 1000,
         stereoPan: 0.0,
         guidanceCue: "Searching for $label. Pan your phone slowly...",
+        totalFoundCount: 0,
+        secondaryMatches: const [],
       );
 }
 
@@ -40,11 +47,11 @@ class ObjectFinderTarget {
 /// Uses spatial audio radar (sonar pings) and directional cues to guide blind users to lost belongings.
 class ObjectFinderSonarService {
   final AudioMutexController _audioMutex;
-  String _activeTargetLabel = "keys";
+  String _activeTargetLabel = "";
   bool _isSearching = false;
   bool _wasFoundPreviously = false;
   int _consecutiveMissingFrames = 0;
-  ObjectFinderTarget _currentState = ObjectFinderTarget.initial("keys");
+  ObjectFinderTarget _currentState = ObjectFinderTarget.initial("");
 
   final StreamController<ObjectFinderTarget> _stateController =
       StreamController<ObjectFinderTarget>.broadcast();
@@ -62,19 +69,33 @@ class ObjectFinderSonarService {
     return s[0].toUpperCase() + s.substring(1);
   }
 
+  DateTime? _lastSpokenGuidanceTime;
+  String? _lastSpokenGuidanceText;
+  int _consecutiveTrackingTicks = 0;
+
   /// Starts searching for a specific item (e.g., 'keys', 'white cane', 'mug', 'wallet')
   void startSearch(String targetLabel) {
-    _activeTargetLabel = targetLabel.trim().toLowerCase();
+    final clean = targetLabel.trim().toLowerCase();
+    if (clean.isEmpty) {
+      _activeTargetLabel = "";
+      _isSearching = false;
+      return;
+    }
+    _activeTargetLabel = clean;
     _isSearching = true;
     _wasFoundPreviously = false;
     _consecutiveMissingFrames = 0;
+    _lastSpokenGuidanceTime = null;
+    _lastSpokenGuidanceText = null;
+    _consecutiveTrackingTicks = 0;
     _currentState = ObjectFinderTarget.initial(_activeTargetLabel);
     _stateController.add(_currentState);
 
+    final activeChan = _audioMutex.activeChannelIndex;
     _audioMutex.speak(
-      text: "Lost item sonar radar active. Locating ${_activeTargetLabel}. Sweep camera slowly across the room.",
+      text: "Lost item sensor active. Locating ${_activeTargetLabel}. Slowly sweep camera across the room.",
       priority: AudioPriority.level2Navigation,
-      channelIndex: 3,
+      channelIndex: activeChan,
       haptic: true,
       force: true,
     );
@@ -84,36 +105,37 @@ class ObjectFinderSonarService {
     _isSearching = false;
     _wasFoundPreviously = false;
     _consecutiveMissingFrames = 0;
+    _lastSpokenGuidanceTime = null;
+    _lastSpokenGuidanceText = null;
+    _consecutiveTrackingTicks = 0;
     _currentState = ObjectFinderTarget.initial(_activeTargetLabel);
     _stateController.add(_currentState);
+    final activeChan = _audioMutex.activeChannelIndex;
     _audioMutex.speak(
-      text: "Object search stopped.",
+      text: "Lost item search stopped.",
       priority: AudioPriority.level3Context,
-      channelIndex: 3,
+      channelIndex: activeChan,
       haptic: false,
     );
   }
 
   /// Processes active vision obstacle candidates to find target item and calculate sonar parameters.
   ObjectFinderTarget updateVisionCandidates(List<DetectedObstacle> detections) {
-    if (!_isSearching) return _currentState;
+    if (!_isSearching || _activeTargetLabel.isEmpty) return _currentState;
 
-    DetectedObstacle? matchedItem;
-    double bestMatchScore = 0.0;
-
+    // Filter all matching candidate detections
+    final List<DetectedObstacle> matchingCandidates = [];
     for (final item in detections) {
       if (isMatching(item.label, _activeTargetLabel)) {
-        if (item.confidence > bestMatchScore) {
-          bestMatchScore = item.confidence;
-          matchedItem = item;
-        }
+        matchingCandidates.add(item);
       }
     }
 
-    if (matchedItem == null) {
+    if (matchingCandidates.isEmpty) {
       _consecutiveMissingFrames++;
       if (_consecutiveMissingFrames >= 8) {
         _wasFoundPreviously = false;
+        _consecutiveTrackingTicks = 0;
       }
       _currentState = ObjectFinderTarget(
         targetLabel: _activeTargetLabel,
@@ -130,6 +152,17 @@ class ObjectFinderSonarService {
     }
 
     _consecutiveMissingFrames = 0;
+
+    // Sort matching items: primary target is closest to center of field of view
+    matchingCandidates.sort((a, b) {
+      final aCenterX = (a.xMin + a.xMax) / 2.0;
+      final bCenterX = (b.xMin + b.xMax) / 2.0;
+      final aDistCenter = (aCenterX - 0.5).abs();
+      final bDistCenter = (bCenterX - 0.5).abs();
+      return aDistCenter.compareTo(bDistCenter);
+    });
+
+    final matchedItem = matchingCandidates.first;
 
     // Calculate center offset and alignment score (1.0 = dead center of viewfinder)
     final centerX = (matchedItem.xMin + matchedItem.xMax) / 2.0;
@@ -154,7 +187,12 @@ class ObjectFinderSonarService {
     final distStr = matchedItem.distanceMeters.toStringAsFixed(1);
     final clock = matchedItem.clockPosition;
 
-    final cue = "$labelName found! Located $directionHint at $clock, $distStr meters away.";
+    final String cue;
+    if (matchingCandidates.length > 1) {
+      cue = "Found ${matchingCandidates.length} ${labelName}s. Nearest is $directionHint at $clock ($distStr m).";
+    } else {
+      cue = "$labelName found! Located $directionHint at $clock, $distStr meters away.";
+    }
 
     _currentState = ObjectFinderTarget(
       targetLabel: _activeTargetLabel,
@@ -165,23 +203,102 @@ class ObjectFinderSonarService {
       sonarPingIntervalMs: pingIntervalMs,
       stereoPan: stereoPan,
       guidanceCue: cue,
+      totalFoundCount: matchingCandidates.length,
+      secondaryMatches: matchingCandidates.skip(1).toList(),
     );
 
     _stateController.add(_currentState);
 
-    // 1. Speak ONLY ONCE when object is found (instead of repeating multiple times)
+    final now = DateTime.now();
+    final activeChan = _audioMutex.activeChannelIndex;
+
+    // 1. Initial Disambiguation or Discovery Announcement
     if (!_wasFoundPreviously) {
       _wasFoundPreviously = true;
+      _lastSpokenGuidanceTime = now;
+      _consecutiveTrackingTicks = 0;
+
+      String initialSpeech;
+      if (matchingCandidates.length > 1) {
+        // Multi-item of same type disambiguation
+        final count = matchingCandidates.length;
+        // Sort left-to-right for spatial clarity
+        final spatialCandidates = List<DetectedObstacle>.from(matchingCandidates)
+          ..sort((a, b) => ((a.xMin + a.xMax) / 2.0).compareTo((b.xMin + b.xMax) / 2.0));
+
+        final buffer = StringBuffer();
+        buffer.write("Found $count ${labelName}s. ");
+        for (int i = 0; i < spatialCandidates.length; i++) {
+          final c = spatialCandidates[i];
+          final cDist = c.distanceMeters.toStringAsFixed(1);
+          buffer.write("One at ${c.clockPosition}, $cDist meters. ");
+        }
+        buffer.write("Guiding you to the primary $labelName at $clock, $distStr meters away.");
+        initialSpeech = buffer.toString();
+      } else {
+        initialSpeech = "$labelName found! Located $directionHint at $clock, $distStr meters away.";
+      }
+
+      _lastSpokenGuidanceText = initialSpeech;
       _audioMutex.speak(
-        text: "$labelName found! Located $directionHint at $clock, $distStr meters away.",
+        text: initialSpeech,
         priority: AudioPriority.level1Safety,
-        channelIndex: 3,
+        channelIndex: activeChan,
         haptic: true,
         force: true,
       );
+    } else {
+      // 2. Continuous Voice Guidance suitable for blind users
+      // Provides spoken instructions as user moves or pans (e.g., "Pan slightly right", "Walk forward", "Within arm's reach, grab it now")
+      _consecutiveTrackingTicks++;
+      final elapsedSinceSpoken = _lastSpokenGuidanceTime == null
+          ? 9999
+          : now.difference(_lastSpokenGuidanceTime!).inMilliseconds;
+
+      // Minimum cadence between continuous spoken nudges: 2200ms
+      if (elapsedSinceSpoken >= 2200 && _consecutiveTrackingTicks >= 5) {
+        String guidanceSpoken;
+        AudioPriority priority = AudioPriority.level2Navigation;
+
+        if (matchedItem.distanceMeters <= 0.45 && alignmentScore >= 0.6) {
+          // Grabbing reach
+          guidanceSpoken = "Directly in front of your hand. Reach straight out and grab the $labelName now!";
+          priority = AudioPriority.level0Critical;
+        } else if (matchedItem.distanceMeters <= 0.9) {
+          // Arm's reach
+          if (stereoPan < -0.25) {
+            guidanceSpoken = "Within arm's reach to your left. Reach out at ${clock}.";
+          } else if (stereoPan > 0.25) {
+            guidanceSpoken = "Within arm's reach to your right. Reach out at ${clock}.";
+          } else {
+            guidanceSpoken = "Within arm's reach, extend your hand forward.";
+          }
+        } else if (alignmentScore < 0.4) {
+          // Misaligned: guide panning
+          if (stereoPan < 0) {
+            guidanceSpoken = "Pan camera slightly left towards $clock.";
+          } else {
+            guidanceSpoken = "Pan camera slightly right towards $clock.";
+          }
+        } else {
+          // Centered: guide walking
+          final metersRound = matchedItem.distanceMeters.toStringAsFixed(1);
+          guidanceSpoken = "Centered straight ahead at 12 o'clock, $metersRound meters away. Walk forward.";
+        }
+
+        // Avoid repeating the exact identical prompt unless proximity reached
+        if (guidanceSpoken != _lastSpokenGuidanceText || matchedItem.distanceMeters <= 0.6) {
+          _lastSpokenGuidanceText = guidanceSpoken;
+          _lastSpokenGuidanceTime = now;
+          _audioMutex.speak(
+            text: guidanceSpoken,
+            priority: priority,
+            channelIndex: activeChan,
+            haptic: matchedItem.distanceMeters <= 0.6,
+          );
+        }
+      }
     }
-    // No repeated voice announcements while continuously tracking!
-    // The acoustic sonar radar click pings provide continuous, non-verbal spatial feedback.
 
     return _currentState;
   }

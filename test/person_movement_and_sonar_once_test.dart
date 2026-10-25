@@ -20,6 +20,9 @@ class MockAudioMutexController implements AudioMutexController {
   }
 
   @override
+  int get activeChannelIndex => 0;
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 

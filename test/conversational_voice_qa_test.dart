@@ -117,5 +117,45 @@ void main() {
       expect(qaService.history.last.answer, contains('Doorway'));
       expect(qaService.history.last.answer, contains("1 o'clock"));
     });
+
+    test('Disambiguates multiple items of the same type in conversational voice query', () async {
+      final multiChairs = [
+        DetectedObstacle(
+          label: 'Chair',
+          confidence: 0.92,
+          xMin: 0.6,
+          yMin: 0.4,
+          xMax: 0.8,
+          yMax: 0.8,
+          distanceMeters: 2.8,
+          ttcSeconds: 4.5,
+          priority: AudioPriority.level2Navigation,
+          clockPosition: "2 o'clock",
+        ),
+        DetectedObstacle(
+          label: 'Chair',
+          confidence: 0.95,
+          xMin: 0.2,
+          yMin: 0.4,
+          xMax: 0.4,
+          yMax: 0.8,
+          distanceMeters: 1.2,
+          ttcSeconds: 2.5,
+          priority: AudioPriority.level1Safety,
+          clockPosition: "10 o'clock",
+        ),
+      ];
+
+      final exchange = await qaService.askQuestion(
+        question: 'Are there any chairs?',
+        activeObstacles: multiChairs,
+        phonePitchDeg: 0.0,
+      );
+
+      expect(exchange.answer, contains('Found 2 chairs'));
+      expect(exchange.answer, contains('closest is at 10 o\'clock, 1.2 meters'));
+      expect(exchange.answer, contains('Another is at 2 o\'clock, 2.8 meters'));
+      expect(exchange.answer, contains('Guiding you to the closest one'));
+    });
   });
 }

@@ -4,6 +4,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../controllers/audio_mutex_controller.dart';
+import 'multi_item_disambiguator.dart';
 import 'online_obstacle_detector.dart';
 
 /// Represents a question and answer exchange with the visual AI.
@@ -220,7 +221,7 @@ class ConversationalVoiceQAService {
       return 'The path directly in front of you is open and clear of visible obstacles.';
     }
 
-    // Specific query matching
+    // Specific query matching with multi-item disambiguation
     if (q.contains('chair') || q.contains('seat')) {
       final chairs = obstacles
           .where((o) =>
@@ -228,8 +229,10 @@ class ConversationalVoiceQAService {
               o.label.toLowerCase().contains('couch'))
           .toList();
       if (chairs.isNotEmpty) {
-        final c = chairs.first;
-        return 'Found a ${c.label} ${c.distanceMeters.toStringAsFixed(1)} meters away at ${c.clockPosition}.';
+        return MultiItemDisambiguator.disambiguateVoiceQuery(
+          targetCategory: 'chair',
+          matches: chairs,
+        );
       }
       return 'No chairs detected in this frame.';
     }
@@ -239,7 +242,10 @@ class ConversationalVoiceQAService {
           .where((o) => o.label.toLowerCase().contains('person'))
           .toList();
       if (people.isNotEmpty) {
-        return 'There ${people.length == 1 ? "is 1 person" : "are ${people.length} people"} detected, closest is ${people.first.distanceMeters.toStringAsFixed(1)} meters away at ${people.first.clockPosition}.';
+        return MultiItemDisambiguator.disambiguateVoiceQuery(
+          targetCategory: 'person',
+          matches: people,
+        );
       }
       return 'No people detected in front of you.';
     }
@@ -249,10 +255,28 @@ class ConversationalVoiceQAService {
           .where((o) => o.label.toLowerCase().contains('door'))
           .toList();
       if (doors.isNotEmpty) {
-        final d = doors.first;
-        return 'Doorway located ${d.distanceMeters.toStringAsFixed(1)} meters ahead at ${d.clockPosition}.';
+        if (doors.length == 1) {
+          final d = doors.first;
+          return 'Doorway located ${d.distanceMeters.toStringAsFixed(1)} meters ahead at ${d.clockPosition}.';
+        }
+        return MultiItemDisambiguator.disambiguateVoiceQuery(
+          targetCategory: 'door',
+          matches: doors,
+        );
       }
       return 'No doorway visible in current angle.';
+    }
+
+    // Check if query matches any other visible object class (bottle, keys, bag, table, laptop, etc.)
+    for (final o in obstacles) {
+      final name = o.label.toLowerCase();
+      if (q.contains(name)) {
+        final matches = obstacles.where((item) => item.label.toLowerCase() == name).toList();
+        return MultiItemDisambiguator.disambiguateVoiceQuery(
+          targetCategory: name,
+          matches: matches,
+        );
+      }
     }
 
     // Comprehensive object explanation & optimal safe walking route
@@ -265,19 +289,15 @@ class ConversationalVoiceQAService {
         q.contains('safe walking') ||
         q.contains('path') ||
         q.contains('walk')) {
-      final descriptions = obstacles.map((o) => o.comprehensiveExplanation).join(' ');
+      final aggregatedSpeech = MultiItemDisambiguator.synthesizeAggregatedSpeech(obstacles);
       final opt = OptimalPathRecommendation.computeOptimalPath(obstacles);
-      return 'Detected ${obstacles.length} ${obstacles.length == 1 ? "object" : "objects"}: $descriptions ${opt.safeWalkingRouteSummary}';
+      return '$aggregatedSpeech ${opt.safeWalkingRouteSummary}';
     }
 
-    // General fallback summary
-    final itemsSummary = obstacles
-        .take(4)
-        .map((o) =>
-            '${o.label} at ${o.clockPosition} (${o.distanceMeters.toStringAsFixed(1)}m)')
-        .join(', ');
+    // General fallback summary with aggregated same-type object grouping
+    final aggregatedSpeech = MultiItemDisambiguator.synthesizeAggregatedSpeech(obstacles);
     final opt = OptimalPathRecommendation.computeOptimalPath(obstacles);
-    return 'In front of you: $itemsSummary. ${opt.safeWalkingRouteSummary}';
+    return '$aggregatedSpeech ${opt.safeWalkingRouteSummary}';
   }
 
   void dispose() {

@@ -7,6 +7,7 @@ import '../currency_recognition_service.dart';
 import '../document_batch_ocr_reader_service.dart';
 import '../document_framing_guide_service.dart';
 import '../smart_glasses_bridge_service.dart';
+import 'omni_vision_frame_analyzer.dart';
 import 'unified_omni_scanner_service.dart';
 
 /// Production Adapter: Bridges AudioMutexController to IAudioGovernanceMutex
@@ -86,6 +87,16 @@ class BarcodeProductServiceAdapter implements IBarcodeProductService {
         );
       }
     }
+
+    // Real Camera Frame Inspection
+    if (yuvFrame.isNotEmpty) {
+      final analysis = await OmniVisionFrameAnalyzer().analyzeFrame(yuvFrame);
+      if (analysis.targetType == VisionTargetType.barcodeProduct &&
+          analysis.barcodeResult != null) {
+        return analysis.barcodeResult;
+      }
+    }
+
     return null;
   }
 }
@@ -116,6 +127,16 @@ class CurrencyRecognitionServiceAdapter implements ICurrencyRecognitionService {
         );
       }
     }
+
+    // Real Camera Frame Inspection
+    if (yuvFrame.isNotEmpty) {
+      final analysis = await OmniVisionFrameAnalyzer().analyzeFrame(yuvFrame);
+      if (analysis.targetType == VisionTargetType.currencyBanknote &&
+          analysis.currencyResult != null) {
+        return analysis.currencyResult;
+      }
+    }
+
     return null;
   }
 
@@ -140,25 +161,37 @@ class DocumentFramingGuideServiceAdapter implements IDocumentFramingGuideService
   @override
   Future<DocumentFrameAudit> evaluateContours(Uint8List yuvFrame, double imuPitchDeg) async {
     final corners = _latestCorners;
-    if (corners == null) {
+    if (corners != null) {
+      final result = _service.evaluateFrame(
+        corners: corners,
+        phonePitchDeg: imuPitchDeg,
+        phoneRollDeg: _rollDeg,
+      );
+
       return DocumentFrameAudit(
-        hasTextOrContours: false,
-        allFourCornersVisible: false,
-        aspectAndTiltValid: false,
+        hasTextOrContours: true,
+        allFourCornersVisible: corners.areAllCornersVisible,
+        aspectAndTiltValid: imuPitchDeg.abs() <= 15.0 && _rollDeg.abs() <= 15.0,
+        audioGuidancePrompt: result.spokenGuidance,
       );
     }
 
-    final result = _service.evaluateFrame(
-      corners: corners,
-      phonePitchDeg: imuPitchDeg,
-      phoneRollDeg: _rollDeg,
-    );
+    // Real Camera Frame Inspection
+    if (yuvFrame.isNotEmpty) {
+      final analysis = await OmniVisionFrameAnalyzer().analyzeFrame(
+        yuvFrame,
+        imuPitchDeg: imuPitchDeg,
+      );
+      if (analysis.targetType == VisionTargetType.documentText &&
+          analysis.framingAudit != null) {
+        return analysis.framingAudit!;
+      }
+    }
 
     return DocumentFrameAudit(
-      hasTextOrContours: true,
-      allFourCornersVisible: corners.areAllCornersVisible,
-      aspectAndTiltValid: imuPitchDeg.abs() <= 15.0 && _rollDeg.abs() <= 15.0,
-      audioGuidancePrompt: result.spokenGuidance,
+      hasTextOrContours: false,
+      allFourCornersVisible: false,
+      aspectAndTiltValid: false,
     );
   }
 }
@@ -174,6 +207,16 @@ class DocumentBatchOcrReaderAdapter implements IDocumentBatchOcrReader {
     if (session.paragraphs.isNotEmpty) {
       return session.paragraphs.map((p) => p.text).join("\n");
     }
+
+    // Real Camera Frame Inspection
+    if (highResFrame.isNotEmpty) {
+      final analysis = await OmniVisionFrameAnalyzer().analyzeFrame(highResFrame);
+      if (analysis.extractedDocumentText != null &&
+          analysis.extractedDocumentText!.isNotEmpty) {
+        return analysis.extractedDocumentText!;
+      }
+    }
+
     return "Scanned Document Content";
   }
 }

@@ -8,6 +8,7 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'controllers/audio_mutex_controller.dart';
 import 'services/online_obstacle_detector.dart';
 import 'services/on_device_obstacle_detector.dart';
+import 'services/multi_item_disambiguator.dart';
 import 'services/kinematic_motion_tracker.dart';
 import 'services/cloud_ai_vision_service.dart';
 import 'services/nameboard_navigation_service.dart';
@@ -17,14 +18,19 @@ import 'services/spatial_binaural_earcon_service.dart';
 import 'services/object_finder_sonar_service.dart';
 import 'services/assistive_item_detector.dart';
 import 'services/tactile_haptic_map_service.dart';
-import 'services/emergency_sos_sentinel_service.dart';
 import 'services/wearable_wrist_haptic_service.dart';
 import 'services/global_standards_service.dart';
 import 'services/smart_cane_ble_service.dart';
 import 'services/smart_glasses_bridge_service.dart';
 import 'controllers/eyes_free_gesture_controller.dart';
 import 'services/sensory_haptic_service.dart';
-import 'ui/views/voice_camera_screen.dart';
+import 'services/barcode_product_service.dart';
+import 'services/currency_recognition_service.dart';
+import 'services/document_framing_guide_service.dart';
+import 'services/document_batch_ocr_reader_service.dart';
+import 'services/assistive/unified_omni_scanner_service.dart';
+import 'services/assistive/orbisnav_adapters.dart';
+import 'services/assistive/omni_vision_frame_analyzer.dart';
 
 List<CameraDescription> _cameras = [];
 
@@ -109,11 +115,14 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   DetectedObstacle? _primaryHazard;
   OptimalPathRecommendation? _optimalPath;
   Timer? _visionStreamTimer;
+  Uint8List? _latestCapturedFrameBytes;
 
   // Multimodal AI Scene Comprehension State
   SceneAnalysisResult _latestSceneAnalysis = SceneAnalysisResult.empty();
   StreamSubscription<SceneAnalysisResult>? _sceneAnalysisSubscription;
   bool _isExplainingSituation = false;
+  int _sceneExplanationProgress = 0;
+  String _sceneExplanationStage = "Analyzing Scene...";
 
   // Destination & Landmark Nameboard Navigation (4km Radius Discovery)
   final NameboardNavigationService _navService = NameboardNavigationService();
@@ -145,17 +154,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       ObjectFinderSonarService();
   StreamSubscription<ObjectFinderTarget>? _objectFinderSubscription;
   ObjectFinderTarget _lastObjectFinderState =
-      ObjectFinderTarget.initial("keys");
+      ObjectFinderTarget.initial("");
 
   final TactileHapticMapService _tactileMapService =
       TactileHapticMapService();
   TactileTouchResult? _lastTactileTouchResult;
-
-  final EmergencySosSentinelService _emergencySosService =
-      EmergencySosSentinelService();
-  StreamSubscription<EmergencySosState>? _emergencySosSubscription;
-  EmergencySosState _lastEmergencySosState =
-      EmergencySosState.monitoring();
 
   final WearableWristHapticService _wristHapticService =
       WearableWristHapticService();
@@ -178,9 +181,18 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   final SensoryHapticService _sensoryHaptics = SensoryHapticService();
   late final EyesFreeGestureController _eyesFreeGestureController;
 
-  int _activeNavTab = 0; // 0: Hazard HUD, 1: Lost Item Sonar
+  int _activeNavTab = 0; // 0: Hazard HUD, 1: Lost Item Sonar, 2: All-in-One Doc Scanner
 
-  // Lost Item Sonar Radar state (Channel 2 of 2 - Voice & Object Detection)
+  // Channel 3: Dedicated All-in-One Doc Scanner State (Document, Currency, Barcode)
+  final BarcodeProductService _barcodeService = BarcodeProductService();
+  final CurrencyRecognitionService _currencyService = CurrencyRecognitionService();
+  final DocumentFramingGuideService _framingGuideService = DocumentFramingGuideService();
+  final DocumentBatchOcrReaderService _documentReaderService = DocumentBatchOcrReaderService();
+  late final UnifiedOmniScannerService _omniScannerService;
+  Timer? _omniScannerStreamTimer;
+  bool _isProcessingScannerFrame = false;
+
+  // Lost Item Sonar Radar state (Channel 2 of 3 - Voice & Object Detection)
   Timer? _itemSonarStreamTimer;
   Timer? _sonarPingTimer;
   bool _isProcessingSonarFrame = false;
@@ -199,12 +211,25 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   }
 
   Future<void> _initSystem() async {
-    // 0. Initialize Eyes-Free Multi-Touch Gesture & Sensory Haptic Controller
+    // 0. Initialize All-in-One Doc Scanner Service
+    _omniScannerService = UnifiedOmniScannerService(
+      audioMutex: AudioGovernanceMutexAdapter(_audioMutex),
+      barcodeService: BarcodeProductServiceAdapter(_barcodeService),
+      currencyService: CurrencyRecognitionServiceAdapter(_currencyService),
+      framingService: DocumentFramingGuideServiceAdapter(_framingGuideService),
+      ocrReader: DocumentBatchOcrReaderAdapter(_documentReaderService),
+      glassesBridge: SmartGlassesBridgeServiceAdapter(_smartGlassesService),
+      voiceQaService: ConversationalVoiceQaServiceAdapter(_voiceQaService),
+      cloudBackendBaseUrl: "",
+      authToken: "",
+    );
+
+    // Initialize Eyes-Free Multi-Touch Gesture & Sensory Haptic Controller (3 Channels)
     _eyesFreeGestureController = EyesFreeGestureController(
       audioMutex: _audioMutex,
       hapticService: _sensoryHaptics,
       initialMode: _activeNavTab,
-      maxModes: 2,
+      maxModes: 3,
       enableShakeDetection: true,
     );
     _eyesFreeGestureController.onModeChanged = (newMode) {
@@ -212,14 +237,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         _switchChannel(newMode);
       }
     };
-    _eyesFreeGestureController.onEmergencySosTriggered = () {
-      if (mounted) {
-        _emergencySosService.triggerManualSos();
-      }
-    };
     _eyesFreeGestureController.onSpatialAuditRequested = () {
       if (mounted) {
         _sensoryHaptics.triggerPattern(TactilePatternType.actionConfirmed);
+        // Trigger detailed scene narration via Scene Analyser
+        _explainSituation();
       }
     };
 
@@ -238,7 +260,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     // 2. Initialize Edge-Native On-Device ML Engine (100% Offline, no Mac/server required)
     await _onDeviceDetector.initialize();
     _onDeviceSubscription = _onDeviceDetector.resultsStream.listen((result) {
-      if (mounted) {
+      if (mounted && _activeNavTab == 0) {
         // Head-height overhead hazard filtering via Smart Glasses
         var processedObstacles =
             _smartGlassesService.filterHeadHeightHazards(result.obstacles);
@@ -253,12 +275,13 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           _primaryHazard = result.highestHazard;
           _optimalPath = result.optimalPath;
         });
-        // World-Class Add-On Services Real-Time Feed
+        // Real-time grid feed for active Channel 0 Safety HUD
         _tactileMapService.updateObstacleGrid(processedObstacles);
-        _objectFinderService.updateVisionCandidates(processedObstacles);
 
         // Real-Time 3D Binaural Earcon Hazard Spatializer
-        if (result.highestHazard != null) {
+        if (result.highestHazard != null &&
+            !_audioMutex.isSceneExplanationExclusive &&
+            !_isExplainingSituation) {
           _earconService.dispatchSpatialEarcon(
             obstacle: result.highestHazard!,
             estimatedElevationMeters:
@@ -309,15 +332,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       if (mounted) {
         setState(() {
           _lastObjectFinderState = state;
-        });
-      }
-    });
-
-    _emergencySosSubscription =
-        _emergencySosService.stateStream.listen((state) {
-      if (mounted) {
-        setState(() {
-          _lastEmergencySosState = state;
         });
       }
     });
@@ -377,6 +391,13 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   }
 
   Future<void> _initCamera() async {
+    if (_cameras.isEmpty) {
+      try {
+        _cameras = await availableCameras();
+      } catch (e) {
+        debugPrint("Available cameras query error: $e");
+      }
+    }
     if (_cameras.isNotEmpty) {
       _cameraController = CameraController(
         _cameras.first,
@@ -414,9 +435,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       // Always update pitch and roll variables instantly for vision calculations
       _pitchDeg = pitchDeg;
       _rollDeg = rollDeg;
-
-      // Ingest accelerometer into Fall & Accident Sentinel
-      _emergencySosService.ingestAccelerometer(x: ax, y: ay, z: az);
 
       // PDR Step Detection
       final magnitude = math.sqrt(ax * ax + ay * ay + az * az);
@@ -457,7 +475,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
           _isVisionActive &&
           _isCameraInitialized &&
           !_isProcessingFrame &&
-          !_isExplainingSituation &&
           _cameraController != null &&
           _cameraController!.value.isInitialized &&
           !_cameraController!.value.isTakingPicture) {
@@ -471,8 +488,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         _cameraController == null ||
         !_cameraController!.value.isInitialized ||
         _cameraController!.value.isTakingPicture ||
-        _isProcessingFrame ||
-        _isExplainingSituation) {
+        _isProcessingFrame) {
       return;
     }
 
@@ -480,6 +496,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     try {
       final image = await _cameraController!.takePicture();
       final bytes = await image.readAsBytes();
+      _latestCapturedFrameBytes = bytes;
 
       // Immediately abort if user switched away from Channel 0
       if (_activeNavTab != 0) return;
@@ -513,61 +530,107 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       }
     } catch (e) {
       debugPrint("Frame processing error: $e");
+      // If camera controller crashed or lost initialization, attempt auto-recovery
+      if (_cameraController != null && !_cameraController!.value.isInitialized) {
+        _initCamera();
+      }
     } finally {
       _isProcessingFrame = false;
     }
   }
 
-  /// Stops detection, clears speech queues, and provides an exclusive voice explanation of the situation.
+  /// Provides an exclusive voice explanation of the situation from the AI Scene Analyser.
+  /// Detection and camera remain running continuously in real time.
   Future<void> _explainSituation() async {
     if (_isExplainingSituation) return;
-    if (_cameraController == null || !_cameraController!.value.isInitialized)
-      return;
 
     setState(() {
       _isExplainingSituation = true;
+      _sceneExplanationProgress = 20;
+      _sceneExplanationStage = "Silencing alerts & capturing live frame (20%)...";
     });
 
-    // 1. Immediately pause ongoing obstacle detection and stop active audio alerts
-    _onDeviceDetector.setEnabled(false);
-    await _audioMutex.stopAll();
+    // 1. Immediately silence any active audio alerts and set exclusive speech lock
+    _audioMutex.setSceneExplanationExclusive(true);
+    await _audioMutex.hardStop();
 
     try {
-      // 2. Capture fresh scene snapshot
-      final img = await _cameraController!.takePicture();
-      final bytes = await img.readAsBytes();
+      String explanationText;
 
-      // 3. Analyze real-time situation
-      final result = await _cloudAiService.analyzeScene(
-        bytes,
-        currentObstacles: _activeObstacles,
-        devicePitchDeg: _pitchDeg,
-        force: true,
-        speakResult: false,
-      );
+      // 2. Use latest captured camera frame if available, otherwise grab a fresh snapshot
+      Uint8List? bytes = _latestCapturedFrameBytes;
+      if (bytes == null && _cameraController != null && _cameraController!.value.isInitialized) {
+        try {
+          if (!_cameraController!.value.isTakingPicture) {
+            final img = await _cameraController!.takePicture();
+            bytes = await img.readAsBytes();
+            _latestCapturedFrameBytes = bytes;
+            try {
+              final f = File(img.path);
+              if (await f.exists()) await f.delete();
+            } catch (_) {}
+          }
+        } catch (e) {
+          debugPrint("[SceneComprehension] Frame grab error: $e");
+        }
+      }
 
-      final explanationText = result.sceneSummary.isNotEmpty
-          ? result.sceneSummary
-          : "Path directly ahead is clear of obstacles.";
+      if (mounted) {
+        setState(() {
+          _sceneExplanationProgress = 50;
+          _sceneExplanationStage = "Analyzing surroundings & obstacles (50%)...";
+        });
+      }
 
-      // 4. Speak situation explanation with priority
-      await _audioMutex.speak(
-        text: explanationText,
-        priority: AudioPriority.level1Safety,
-        force: true,
-        haptic: false,
-      );
+      if (bytes != null) {
+        // 3. Analyze real-time situation
+        final result = await _cloudAiService.analyzeScene(
+          bytes,
+          currentObstacles: _activeObstacles,
+          devicePitchDeg: _pitchDeg,
+          force: true,
+          speakResult: false,
+        );
+
+        explanationText = result.sceneSummary.isNotEmpty
+            ? result.sceneSummary
+            : "Path directly ahead is clear of obstacles.";
+      } else {
+        // Fallback: Generate detailed scene narration from active obstacle sensor fusion & kinematics
+        final caption = _captioningService.generateCaption(
+          obstacles: _activeObstacles,
+          phonePitchDeg: _pitchDeg,
+        );
+        explanationText = caption.spokenCaption.isNotEmpty
+            ? caption.spokenCaption
+            : "Scene Analyser: Path directly ahead is clear of obstacles.";
+      }
+
+      if (mounted) {
+        setState(() {
+          _sceneExplanationProgress = 85;
+          _sceneExplanationStage = "Synthesizing spatial voice explanation (85%)...";
+        });
+      }
+
+      // 4. Exclusively speak situation explanation - ensuring NO other sounds/alerts interrupt
+      if (mounted) {
+        setState(() {
+          _sceneExplanationProgress = 100;
+          _sceneExplanationStage = "Speaking Scene Narration (100%)";
+        });
+      }
+      await _audioMutex.speakSceneExplanation(explanationText);
     } catch (e) {
       debugPrint("[SceneComprehension] Explain situation exception: $e");
     } finally {
+      _audioMutex.setSceneExplanationExclusive(false);
       if (mounted) {
         setState(() {
           _isExplainingSituation = false;
+          _sceneExplanationProgress = 0;
         });
       }
-      // 5. Resume on-device obstacle detection
-      _onDeviceDetector.setEnabled(true);
-      _onDeviceDetector.forceRescan();
     }
   }
 
@@ -588,6 +651,25 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (_cameraController == null || !_cameraController!.value.isInitialized) {
+        _initCamera().then((_) {
+          if (mounted && _isVisionActive) {
+            _startVisionStream();
+            _onDeviceDetector.setEnabled(true);
+          }
+        });
+      } else {
+        if (_isVisionActive) {
+          _startVisionStream();
+          _onDeviceDetector.setEnabled(true);
+        }
+      }
+    }
+  }
+
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _visionStreamTimer?.cancel();
@@ -600,7 +682,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _captionSubscription?.cancel();
     _earconSubscription?.cancel();
     _objectFinderSubscription?.cancel();
-    _emergencySosSubscription?.cancel();
     _wristHapticSubscription?.cancel();
     _smartCaneSubscription?.cancel();
     _smartGlassesSubscription?.cancel();
@@ -610,13 +691,13 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _eyesFreeGestureController.dispose();
     _objectFinderService.dispose();
     _tactileMapService.dispose();
-    _emergencySosService.dispose();
     _wristHapticService.dispose();
     _smartCaneService.dispose();
     _smartGlassesService.dispose();
     _speechSubscription?.cancel();
     _itemSonarStreamTimer?.cancel();
     _sonarPingTimer?.cancel();
+    _omniScannerStreamTimer?.cancel();
     _voiceQuestionInputController.dispose();
     _voiceSonarItemController.dispose();
     _navService.stopNavigation();
@@ -643,6 +724,14 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       _isProcessingSonarFrame = false;
       _objectFinderService.stopSearch();
     }
+
+    // Channel 2 (All-in-One Doc Scanner): Pause scanner service
+    if (activeChannel != 2) {
+      _omniScannerStreamTimer?.cancel();
+      _omniScannerStreamTimer = null;
+      _isProcessingScannerFrame = false;
+      _omniScannerService.stopScanner();
+    }
   }
 
   void _switchChannel(int newChannel) {
@@ -658,6 +747,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     // 3. Clear all camera frame locks so the newly activated channel starts immediately without deadlock
     _isProcessingFrame = false;
     _isProcessingSonarFrame = false;
+    _isProcessingScannerFrame = false;
 
     setState(() {
       _activeNavTab = newChannel;
@@ -668,17 +758,24 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       _onDeviceDetector.setEnabled(true);
       _startVisionStream();
     } else if (newChannel == 1) {
-      // Channel 2 of 2: Auto-start Lost Item Sonar stream with immediate active search
+      // Channel 2 of 3: Lost Item Sonar - ask what to find and trigger Google Voice input!
       _onDeviceDetector.setEnabled(true);
-      if (!_objectFinderService.isSearching) {
-        _objectFinderService.startSearch(_objectFinderService.activeTargetLabel);
-      }
       _startItemSonarStream();
+      Future.delayed(const Duration(milliseconds: 350), () {
+        if (mounted && _activeNavTab == 1) {
+          _startVoiceItemSearch();
+        }
+      });
+    } else if (newChannel == 2) {
+      // Channel 3 of 3: Auto-start All-in-One Doc Scanner
+      _omniScannerService.startScanner();
+      _startOmniScannerStream();
     }
 
     final channelNames = [
       "Safety Hazard HUD",
       "Lost Item Sonar Radar",
+      "All-in-One Doc Scanner",
     ];
 
     HapticFeedback.heavyImpact();
@@ -754,11 +851,12 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       // Ensure detector is enabled for real-time edge inference
       _onDeviceDetector.setEnabled(true);
 
-      // Run on-device detector without hazard speech governance (Sonar drives its own audio cues)
+      // Run on-device detector without hazard speech governance or stream publishing (Sonar drives its own audio cues)
       final result = await _onDeviceDetector.processFrameBytes(
         bytes,
         devicePitchDeg: _pitchDeg,
         speakGovernance: false,
+        publishStream: false,
       );
       if (_activeNavTab != 1) return;
 
@@ -835,6 +933,61 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     }
   }
 
+  /// Active Camera Ingestion Loop for Channel 2 (All-in-One Doc Scanner)
+  void _startOmniScannerStream() {
+    _omniScannerStreamTimer?.cancel();
+    _omniScannerStreamTimer =
+        Timer.periodic(const Duration(milliseconds: 2500), (_) {
+      if (_activeNavTab == 2 &&
+          _isCameraInitialized &&
+          !_isProcessingScannerFrame &&
+          _omniScannerService.currentMode != OmniScanMode.idle &&
+          _cameraController != null &&
+          _cameraController!.value.isInitialized &&
+          !_cameraController!.value.isTakingPicture) {
+        _processOmniScannerCameraFrame();
+      }
+    });
+  }
+
+  Future<void> _processOmniScannerCameraFrame() async {
+    if (_cameraController == null ||
+        !_cameraController!.value.isInitialized ||
+        _cameraController!.value.isTakingPicture ||
+        _isProcessingScannerFrame ||
+        _activeNavTab != 2) {
+      return;
+    }
+
+    _isProcessingScannerFrame = true;
+    try {
+      if (!_cameraController!.value.isInitialized ||
+          _cameraController!.value.isTakingPicture) {
+        return;
+      }
+      final img = await _cameraController!.takePicture();
+      final bytes = await img.readAsBytes();
+      if (_activeNavTab != 2) return;
+      try {
+        final f = File(img.path);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+
+      // Dispatch to Unified Omni Scanner (Zero-Heap Frame Ingestion Pipeline)
+      await _omniScannerService.processCameraFrame(
+        yuv420Frame: bytes,
+        imuPitchDegrees: _pitchDeg,
+      );
+      if (mounted) setState(() {});
+    } on CameraException catch (ce) {
+      debugPrint("[DocScanner] Camera snapshot note: ${ce.description}");
+    } catch (e) {
+      debugPrint("[DocScanner] Frame processing error: $e");
+    } finally {
+      _isProcessingScannerFrame = false;
+    }
+  }
+
   void _startSonarSearchFor(String label) {
     _onDeviceDetector.setEnabled(true);
     _objectFinderService.startSearch(label);
@@ -846,15 +999,16 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
   Future<void> _startVoiceItemSearch() async {
     HapticFeedback.heavyImpact();
     await _audioMutex.speak(
-      text: "Listening. Speak the item you want to find.",
+      text: "Lost item finder active. What would you like to find?",
       priority: AudioPriority.level2Navigation,
       channelIndex: 1,
       force: true,
       haptic: true,
     );
 
-    // Give TTS 1.2s to announce before opening microphone to avoid capturing app's own voice
-    await Future.delayed(const Duration(milliseconds: 1200));
+    // Give TTS time to announce before opening microphone to avoid capturing app's own voice
+    await Future.delayed(const Duration(milliseconds: 1400));
+    if (!mounted || _activeNavTab != 1) return;
 
     final recognized = await _audioMutex.startVoiceInput();
     if (recognized.isNotEmpty) {
@@ -882,14 +1036,16 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         }
       }
       if (clean.isNotEmpty) {
+        _voiceSonarItemController.text = clean;
         _startSonarSearchFor(clean);
         return;
       }
     }
 
     _audioMutex.speak(
-      text:
-          "No speech recognized. Still searching for ${_objectFinderService.activeTargetLabel}.",
+      text: _objectFinderService.activeTargetLabel.isNotEmpty
+          ? "No speech recognized. Still searching for ${_objectFinderService.activeTargetLabel}."
+          : "Tap the microphone button to speak what to find.",
       priority: AudioPriority.level3Context,
       channelIndex: 1,
     );
@@ -925,9 +1081,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
             const SizedBox(width: 8),
             const Flexible(
               child: Text(
-                "Motion Vision & 4km GPS",
+                "Spatial HUD",
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
               ),
             ),
           ],
@@ -971,17 +1127,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                 ],
               ),
             ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.auto_awesome, color: Color(0xFF00E5FF)),
-            tooltip: "Open Voice Visual Cortex (Double-tap Torch / Voice Router)",
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => VoiceCameraScreen(cameras: _cameras),
-                ),
-              );
-            },
           ),
         ],
       ),
@@ -1033,7 +1178,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     InkWell(
-                      onTap: () => _switchChannel((_activeNavTab - 1 + 2) % 2),
+                      onTap: () => _switchChannel((_activeNavTab - 1 + 3) % 3),
                       child: const Row(
                         children: [
                           Icon(Icons.arrow_back_ios, size: 12, color: Colors.white70),
@@ -1048,27 +1193,33 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                           decoration: BoxDecoration(
                             color: _activeNavTab == 0
                                 ? const Color(0xFF00E5FF).withValues(alpha: 0.2)
-                                : const Color(0xFFFF0055).withValues(alpha: 0.2),
+                                : _activeNavTab == 1
+                                    ? const Color(0xFFFF0055).withValues(alpha: 0.2)
+                                    : const Color(0xFF76FF03).withValues(alpha: 0.2),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
                             _activeNavTab == 0
-                                ? "CHANNEL 1 OF 2: SAFETY HUD"
-                                : "CHANNEL 2 OF 2: LOST ITEM SONAR",
+                                ? "CHANNEL 1 OF 3: SAFETY HUD"
+                                : _activeNavTab == 1
+                                    ? "CHANNEL 2 OF 3: LOST ITEM SONAR"
+                                    : "CHANNEL 3 OF 3: ALL-IN-ONE DOC SCANNER",
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
                               letterSpacing: 1.1,
                               color: _activeNavTab == 0
                                   ? const Color(0xFF00E5FF)
-                                  : const Color(0xFFFF0055),
+                                  : _activeNavTab == 1
+                                      ? const Color(0xFFFF0055)
+                                      : const Color(0xFF76FF03),
                             ),
                           ),
                         ),
                       ],
                     ),
                     InkWell(
-                      onTap: () => _switchChannel((_activeNavTab + 1) % 2),
+                      onTap: () => _switchChannel((_activeNavTab + 1) % 3),
                       child: const Row(
                         children: [
                           Text("SWIPE", style: TextStyle(fontSize: 10, color: Colors.white70)),
@@ -1096,6 +1247,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                 _buildOptimalPathGuidanceCard(hasCriticalHazard),
                 const SizedBox(height: 12),
 
+                // Dedicated Scene Analyser for Detailed Voice Narration
+                _buildSceneComprehensionCard(),
+                const SizedBox(height: 12),
+
                 // 3D Spatial Binaural Earcons
                 _buildBinauralEarconStatusCard(),
                 const SizedBox(height: 12),
@@ -1114,13 +1269,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                   icon: Icons.devices_other,
                   color: const Color(0xFF00E5FF),
                   child: _buildSmartHardwareEcosystemCard(),
-                ),
-
-                _buildAccordionSection(
-                  title: "EMERGENCY SOS & FALL SENTINEL",
-                  icon: Icons.health_and_safety,
-                  color: const Color(0xFFFF1744),
-                  child: _buildEmergencySosCard(),
                 ),
 
                 _buildAccordionSection(
@@ -1143,8 +1291,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                   child: Column(
                     children: [
                       _buildTactileRoomMapCard(),
-                      const SizedBox(height: 10),
-                      _buildSceneComprehensionCard(),
                     ],
                   ),
                 ),
@@ -1162,9 +1308,12 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                   color: Colors.white70,
                   child: _buildAudioStatusCard(hasCriticalHazard),
                 ),
-              ] else ...[
-                // Channel 2 of 2: Dedicated Lost Item Sonar Radar Channel (Voice Query & Acoustic Echo-Location)
+              ] else if (_activeNavTab == 1) ...[
+                // Channel 2 of 3: Dedicated Lost Item Sonar Radar Channel (Voice Query & Acoustic Echo-Location)
                 _buildLostItemSonarChannel(),
+              ] else ...[
+                // Channel 3 of 3: Dedicated All-in-One Doc Scanner Channel (Document, Currency, Barcode)
+                _buildAllInOneDocScannerChannel(),
               ],
               const SizedBox(height: 24),
             ],
@@ -1834,25 +1983,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                 if (_isCameraInitialized && _cameraController != null)
                   CameraPreview(_cameraController!)
                 else
-                  Container(
-                    color: Colors.black,
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.camera_alt,
-                              size: 48,
-                              color: Colors.white.withValues(alpha: 0.2)),
-                          const SizedBox(height: 8),
-                          const Text(
-                            "Connecting Portrait Camera Stream...",
-                            style:
-                                TextStyle(fontSize: 12, color: Colors.white54),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                  _buildCameraInitializationLoader(),
+
+                // Active Scene Explanation Percentage HUD Overlay
+                if (_isExplainingSituation)
+                  _buildSceneExplanationPercentageOverlay(),
 
                 // Center Focus Reticle
                 Center(
@@ -1917,8 +2052,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                   ),
                 ),
 
-                // Dynamic Live Bounding Boxes with Motion Indicators
-                ..._activeObstacles.map((obs) {
+                // Dynamic Live Bounding Boxes with Multi-Item Disambiguation & Motion Indicators
+                ...MultiItemDisambiguator.disambiguateObstacles(_activeObstacles).map((item) {
+                  final obs = item.obstacle;
                   final left =
                       (obs.xMin * boxWidth).clamp(0.0, boxWidth - 40.0);
                   final top =
@@ -1952,7 +2088,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                                 horizontal: 4, vertical: 1),
                             color: color,
                             child: Text(
-                              "${obs.label.toUpperCase()} ${(obs.confidence * 100).toInt()}% • ${obs.formattedMotionBadge} • ${obs.distanceMeters.toStringAsFixed(1)}m",
+                              "${item.hudBadge} ${(obs.confidence * 100).toInt()}% • ${obs.formattedMotionBadge} • ${obs.distanceMeters.toStringAsFixed(1)}m",
                               style: TextStyle(
                                 fontSize: 9,
                                 fontWeight: FontWeight.bold,
@@ -2090,6 +2226,203 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     );
   }
 
+  Widget _buildCameraInitializationLoader() {
+    return Container(
+      color: const Color(0xFF090D16),
+      child: Center(
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0.0, end: 1.0),
+          duration: const Duration(milliseconds: 2500),
+          builder: (context, value, _) {
+            final pct = (value * 100).toInt().clamp(0, 99);
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    SizedBox(
+                      width: 90,
+                      height: 90,
+                      child: CircularProgressIndicator(
+                        value: value,
+                        strokeWidth: 5,
+                        backgroundColor: Colors.white10,
+                        valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00E5FF)),
+                      ),
+                    ),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          "$pct%",
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF00E5FF),
+                            letterSpacing: 1.2,
+                          ),
+                        ),
+                        const Text(
+                          "BOOT",
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white38,
+                            letterSpacing: 1.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Initializing Neural Vision Stream...",
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  pct < 40
+                      ? "Calibrating camera lens & ISP..."
+                      : pct < 80
+                          ? "Loading TFLite neural vision weights..."
+                          : "Synchronizing sensor fusion...",
+                  style: const TextStyle(fontSize: 11, color: Colors.white54),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSceneExplanationPercentageOverlay() {
+    final pct = _sceneExplanationProgress;
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.82),
+        borderRadius: BorderRadius.circular(15),
+      ),
+      child: Center(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 24),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
+          decoration: BoxDecoration(
+            color: const Color(0xFF13112E),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: const Color(0xFF818CF8),
+              width: 2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF818CF8).withValues(alpha: 0.35),
+                blurRadius: 20,
+                spreadRadius: 2,
+              )
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.auto_awesome, color: Color(0xFFA5B4FC), size: 18),
+                  SizedBox(width: 8),
+                  Text(
+                    "AI SCENE ANALYSER",
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.5,
+                      color: Color(0xFFA5B4FC),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              Stack(
+                alignment: Alignment.center,
+                children: [
+                  SizedBox(
+                    width: 96,
+                    height: 96,
+                    child: CircularProgressIndicator(
+                      value: pct / 100.0,
+                      strokeWidth: 6,
+                      backgroundColor: Colors.white10,
+                      valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF818CF8)),
+                    ),
+                  ),
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        "$pct%",
+                        style: const TextStyle(
+                          fontSize: 26,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.white,
+                          letterSpacing: 1.0,
+                        ),
+                      ),
+                      Text(
+                        pct >= 100 ? "VOICE LIVE" : "PROCESSING",
+                        style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                          color: pct >= 100 ? const Color(0xFF76FF03) : const Color(0xFFA5B4FC),
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: LinearProgressIndicator(
+                  value: pct / 100.0,
+                  minHeight: 6,
+                  backgroundColor: Colors.white12,
+                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF818CF8)),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                _sceneExplanationStage,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                "Exclusive Voice Narration Active",
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.white54,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _speakAllDetectedObjects() {
     if (_activeObstacles.isEmpty) {
       _audioMutex.speak(
@@ -2101,31 +2434,37 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       return;
     }
 
-    final count = _activeObstacles.length;
     final opt = _optimalPath ??
         OptimalPathRecommendation.computeOptimalPath(_activeObstacles);
-    final buffer = StringBuffer();
-    buffer.write("Scene explanation: $count ${count == 1 ? "object" : "objects"} detected. ");
-    for (int i = 0; i < count; i++) {
-      final obs = _activeObstacles[i];
-      buffer.write("Object ${i + 1}: ${obs.comprehensiveExplanation} ");
-    }
-    buffer.write(opt.safeWalkingRouteSummary);
+    final aggregatedSpeech =
+        MultiItemDisambiguator.synthesizeAggregatedSpeech(_activeObstacles);
+    final speech = "$aggregatedSpeech Optimal route: ${opt.voiceInstruction}.";
 
     _audioMutex.speak(
-      text: buffer.toString(),
+      text: speech,
       priority: AudioPriority.level1Safety,
+      channelIndex: 0,
       force: true,
       haptic: true,
     );
   }
 
   void _speakSingleObject(DetectedObstacle obs) {
+    // Concise: Give object name and optimal safe walking route guidance together (detailed narration in Scene Analyser)
+    final opt = _optimalPath ??
+        OptimalPathRecommendation.computeOptimalPath(_activeObstacles);
+    final isCritical = obs.priority == AudioPriority.level0Critical || obs.distanceMeters <= 1.0;
+    final prefix = isCritical ? "Caution! " : "";
+    final speech = "$prefix${obs.label} at ${obs.clockPosition}, ${obs.distanceMeters.toStringAsFixed(1)} meters. Optimal route: ${opt.voiceInstruction}.";
+
     _audioMutex.speak(
-      text: obs.comprehensiveExplanation,
-      priority: AudioPriority.level1Safety,
+      text: speech,
+      priority: (obs.distanceMeters <= 1.5)
+          ? AudioPriority.level0Critical
+          : AudioPriority.level1Safety,
+      channelIndex: 0,
       force: true,
-      haptic: true,
+      haptic: obs.distanceMeters <= 1.5,
     );
   }
 
@@ -2204,7 +2543,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                     const SizedBox(width: 8),
                     const Flexible(
                       child: Text(
-                        "OPTIMAL ROUTE FOR SAFE WALKING",
+                        "SAFE WALKING CORRIDOR",
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                             fontSize: 11,
@@ -2595,7 +2934,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                   style: const TextStyle(fontSize: 12, color: Colors.white70),
                 ),
               ),
-              if (_activeObstacles.isNotEmpty)
+              if (_activeObstacles.isNotEmpty) ...[
                 InkWell(
                   onTap: _speakAllDetectedObjects,
                   borderRadius: BorderRadius.circular(6),
@@ -2611,11 +2950,11 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.record_voice_over,
+                        Icon(Icons.directions_walk,
                             size: 13, color: Color(0xFF00E5FF)),
                         SizedBox(width: 5),
                         Text(
-                          "EXPLAIN ALL",
+                          "OBJECTS & ROUTE",
                           style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.bold,
@@ -2625,6 +2964,41 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                     ),
                   ),
                 ),
+                const SizedBox(width: 6),
+                InkWell(
+                  onTap: (_isExplainingSituation || _cloudAiService.isAnalyzing)
+                      ? null
+                      : () => _explainSituation(),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF818CF8).withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                          color: const Color(0xFF818CF8).withValues(alpha: 0.7)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.auto_awesome,
+                            size: 13, color: Color(0xFFA5B4FC)),
+                        const SizedBox(width: 4),
+                        Text(
+                          _isExplainingSituation
+                              ? "ANALYZING $_sceneExplanationProgress%..."
+                              : "SCENE ANALYSER",
+                          style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFFA5B4FC)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
           if (_activeObstacles.isNotEmpty) ...[
@@ -2783,16 +3157,19 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                 size: 20,
               ),
               const SizedBox(width: 8),
-              const Text(
-                "REAL-TIME SITUATION ANALYZER",
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.1,
-                  color: Color(0xFFA5B4FC),
+              const Expanded(
+                child: Text(
+                  "SCENE ANALYSER",
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.1,
+                    color: Color(0xFFA5B4FC),
+                  ),
                 ),
               ),
-              const Spacer(),
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
@@ -2803,7 +3180,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                 ),
                 child: Text(
                   hasInternet
-                      ? (isAnalyzing ? "ANALYZING..." : "GEMINI 2.0")
+                      ? (_isExplainingSituation
+                          ? "$_sceneExplanationProgress%"
+                          : (isAnalyzing ? "ANALYZING..." : "GEMINI 2.0"))
                       : "STANDALONE EDGE",
                   style: const TextStyle(
                       fontSize: 10,
@@ -2941,8 +3320,8 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                           strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.record_voice_over, size: 16),
               label: Text((_isExplainingSituation || isAnalyzing)
-                  ? "Explaining Situation..."
-                  : "Explain Situation (Voice Narration)"),
+                  ? "Analyzing Scene ($_sceneExplanationProgress%)..."
+                  : "Scene Analyser (Speak Detailed Narration)"),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF4F46E5),
                 foregroundColor: Colors.white,
@@ -3048,10 +3427,32 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
             const SizedBox(width: 10),
             Expanded(
               child: ElevatedButton.icon(
+                onPressed: (_isExplainingSituation || _cloudAiService.isAnalyzing)
+                    ? null
+                    : _explainSituation,
+                icon: const Icon(Icons.auto_awesome, size: 16),
+                label: Text(
+                  _isExplainingSituation
+                      ? "Analyzing $_sceneExplanationProgress%..."
+                      : "Scene Analyser",
+                  style: const TextStyle(fontSize: 12),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4F46E5),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: ElevatedButton.icon(
                 onPressed: _clearHazards,
                 icon: const Icon(Icons.check_circle_outline, size: 16),
                 label:
-                    const Text("Clear Hazards", style: TextStyle(fontSize: 12)),
+                    const Text("Clear", style: TextStyle(fontSize: 12)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1E293B),
                   foregroundColor: const Color(0xFF76FF03),
@@ -3193,8 +3594,477 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               ),
             ),
           ),
+          const SizedBox(width: 4),
+          // Tab 2: All-in-One Doc Scanner
+          Expanded(
+            child: Semantics(
+              button: true,
+              selected: _activeNavTab == 2,
+              label: "All-in-One Document Scanner Mode",
+              hint: "Double tap to switch to All-in-One Document, Currency, and Barcode Scanner",
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  key: const Key('mode_tab_doc_scan'),
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => _switchChannel(2),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    decoration: BoxDecoration(
+                      color: _activeNavTab == 2
+                          ? const Color(0xFF76FF03).withValues(alpha: 0.2)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: _activeNavTab == 2
+                            ? const Color(0xFF76FF03)
+                            : Colors.transparent,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.document_scanner,
+                          size: 14,
+                          color: _activeNavTab == 2
+                              ? const Color(0xFF76FF03)
+                              : Colors.white60,
+                        ),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            "Doc Scan",
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: _activeNavTab == 2
+                                  ? const Color(0xFF76FF03)
+                                  : Colors.white60,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
+    );
+  }
+
+  void _showGeminiApiKeyDialog() {
+    final textController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF0F172A),
+        title: const Row(
+          children: [
+            Icon(Icons.auto_awesome, color: Color(0xFF76FF03), size: 20),
+            SizedBox(width: 8),
+            Text("Multimodal Gemini AI", style: TextStyle(color: Colors.white, fontSize: 16)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "Optionally enter your free Google Gemini API key to activate deep Multimodal Vision over the internet for documents, banknotes, and barcodes.",
+              style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: textController,
+              style: const TextStyle(color: Colors.white, fontSize: 14),
+              decoration: InputDecoration(
+                hintText: "AIzaSy...",
+                hintStyle: const TextStyle(color: Colors.white38),
+                filled: true,
+                fillColor: const Color(0xFF1E293B),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Cancel", style: TextStyle(color: Colors.white60)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF76FF03),
+              foregroundColor: Colors.black,
+            ),
+            onPressed: () {
+              final key = textController.text.trim();
+              if (key.isNotEmpty) {
+                OmniVisionFrameAnalyzer().setApiKey(key);
+                _cloudAiService.setApiKey(key);
+                _audioMutex.speak(
+                  text: "Gemini Cloud AI key activated.",
+                  priority: AudioPriority.level2Navigation,
+                  channelIndex: 2,
+                );
+              }
+              Navigator.pop(ctx);
+            },
+            child: const Text("Save Key", style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Channel 3 of 3: Dedicated All-in-One Doc Scanner Viewport (Document, Currency, Barcode)
+  Widget _buildAllInOneDocScannerChannel() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final screenHeight = MediaQuery.of(context).size.height;
+        final viewportHeight = (screenHeight * 0.72).clamp(480.0, 720.0);
+        final boxWidth = constraints.maxWidth;
+
+        return AnimatedBuilder(
+          animation: _omniScannerService,
+          builder: (context, _) {
+            final mode = _omniScannerService.currentMode;
+            final isRunning = mode != OmniScanMode.idle &&
+                mode != OmniScanMode.throttledLowPower;
+            const accentColor = Color(0xFF76FF03);
+
+            return Container(
+              height: viewportHeight,
+              decoration: BoxDecoration(
+                color: const Color(0xFF070B12),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: accentColor.withValues(alpha: 0.5),
+                  width: 2.0,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: accentColor.withValues(alpha: 0.12),
+                    blurRadius: 16,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(18),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // 1. Live Camera Viewport
+                    if (_isCameraInitialized && _cameraController != null)
+                      CameraPreview(_cameraController!)
+                    else
+                      _buildCameraInitializationLoader(),
+
+                    // 2. High-Contrast Framing Corner Reticle
+                    Center(
+                      child: Container(
+                        width: boxWidth * 0.86,
+                        height: viewportHeight * 0.58,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: isRunning
+                                ? accentColor.withValues(alpha: 0.8)
+                                : Colors.white24,
+                            width: 1.5,
+                          ),
+                        ),
+                        child: Stack(
+                          children: [
+                            Positioned(
+                              top: 0,
+                              left: 0,
+                              child: Container(
+                                width: 24,
+                                height: 24,
+                                decoration: const BoxDecoration(
+                                  border: Border(
+                                    top: BorderSide(color: accentColor, width: 4),
+                                    left: BorderSide(color: accentColor, width: 4),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              top: 0,
+                              right: 0,
+                              child: Container(
+                                width: 24,
+                                height: 24,
+                                decoration: const BoxDecoration(
+                                  border: Border(
+                                    top: BorderSide(color: accentColor, width: 4),
+                                    right: BorderSide(color: accentColor, width: 4),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              bottom: 0,
+                              left: 0,
+                              child: Container(
+                                width: 24,
+                                height: 24,
+                                decoration: const BoxDecoration(
+                                  border: Border(
+                                    bottom: BorderSide(color: accentColor, width: 4),
+                                    left: BorderSide(color: accentColor, width: 4),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              bottom: 0,
+                              right: 0,
+                              child: Container(
+                                width: 24,
+                                height: 24,
+                                decoration: const BoxDecoration(
+                                  border: Border(
+                                    bottom: BorderSide(color: accentColor, width: 4),
+                                    right: BorderSide(color: accentColor, width: 4),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    // 3. Top Mode Banner
+                    Positioned(
+                      top: 10,
+                      left: 10,
+                      right: 10,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0A0E17).withValues(alpha: 0.92),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: accentColor.withValues(alpha: 0.6),
+                            width: 1.5,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: isRunning ? accentColor : Colors.grey,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                isRunning
+                                    ? "ALL-IN-ONE DOC SCANNER: ACTIVE"
+                                    : "ALL-IN-ONE DOC SCANNER: PAUSED",
+                                style: const TextStyle(
+                                  color: accentColor,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1.1,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.key, color: accentColor, size: 18),
+                              tooltip: "Set Gemini API Key",
+                              onPressed: _showGeminiApiKeyDialog,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    // 4. Live Output Card & Controls at Bottom
+                    Positioned(
+                      bottom: 12,
+                      left: 12,
+                      right: 12,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Dynamic Result / Status Card
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF0A0E17).withValues(alpha: 0.94),
+                              border: Border.all(
+                                color: accentColor.withValues(alpha: 0.6),
+                                width: 1.5,
+                              ),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                // Target Classification Header Badge
+                                Row(
+                                  children: [
+                                    Icon(
+                                      mode == OmniScanMode.barcodeLocked
+                                          ? Icons.qr_code_scanner
+                                          : (mode == OmniScanMode.currencyLocked ||
+                                                  mode == OmniScanMode.currencyVerifying)
+                                              ? Icons.payments
+                                              : (mode == OmniScanMode.documentFraming ||
+                                                      mode == OmniScanMode.documentSummarizing)
+                                                  ? Icons.description
+                                                  : Icons.visibility,
+                                      size: 16,
+                                      color: accentColor,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      mode == OmniScanMode.barcodeLocked
+                                          ? "BARCODE & PRODUCT DETECTED"
+                                          : (mode == OmniScanMode.currencyLocked
+                                              ? "BANKNOTE CONFIRMED"
+                                              : (mode == OmniScanMode.currencyVerifying
+                                                  ? "VERIFYING BANKNOTE"
+                                                  : (mode == OmniScanMode.documentSummarizing
+                                                      ? "AI DOCUMENT SUMMARIZING"
+                                                      : (mode == OmniScanMode.documentFraming
+                                                          ? "DOCUMENT FRAMING"
+                                                          : "AI OMNI-SCANNER ACTIVE")))),
+                                      style: TextStyle(
+                                        color: accentColor,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w900,
+                                        letterSpacing: 0.8,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  _omniScannerService.statusMessage,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    height: 1.3,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          // Dual Control Row: Stream Toggle & Instant Snap Scan
+                          Row(
+                            children: [
+                              Expanded(
+                                flex: 3,
+                                child: SizedBox(
+                                  height: 48,
+                                  child: ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: isRunning
+                                          ? const Color(0xFFFF1744)
+                                          : accentColor,
+                                      foregroundColor: Colors.black,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                    ),
+                                    onPressed: () {
+                                      HapticFeedback.heavyImpact();
+                                      if (isRunning) {
+                                        _omniScannerStreamTimer?.cancel();
+                                        _omniScannerService.stopScanner();
+                                      } else {
+                                        _omniScannerService.startScanner();
+                                        _startOmniScannerStream();
+                                      }
+                                    },
+                                    icon: Icon(
+                                      isRunning ? Icons.pause : Icons.play_arrow,
+                                      size: 18,
+                                    ),
+                                    label: Text(
+                                      isRunning ? "PAUSE SCANNER" : "START SCANNING",
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 12,
+                                        letterSpacing: 0.8,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                flex: 2,
+                                child: SizedBox(
+                                  height: 48,
+                                  child: ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF1E293B),
+                                      foregroundColor: accentColor,
+                                      side: BorderSide(
+                                        color: accentColor.withValues(alpha: 0.6),
+                                        width: 1.5,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                    ),
+                                    onPressed: () {
+                                      HapticFeedback.heavyImpact();
+                                      _audioMutex.speak(
+                                        text: "Scanning for document, banknote, or barcode.",
+                                        priority: AudioPriority.level2Navigation,
+                                        channelIndex: 2,
+                                        force: true,
+                                      );
+                                      _processOmniScannerCameraFrame();
+                                    },
+                                    icon: const Icon(
+                                      Icons.camera_alt,
+                                      size: 18,
+                                    ),
+                                    label: const Text(
+                                      "SNAP NOW",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 12,
+                                        letterSpacing: 0.8,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -3481,151 +4351,6 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
       ),
     );
   }
-
-  Widget _buildEmergencySosCard() {
-    final sos = _lastEmergencySosState;
-    final isCountdown =
-        sos.status == FallDetectionStatus.fallDetectedCountdown;
-    final isLanyard = _wristHapticService.isChestLanyardModeEnabled;
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF131B2A),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isCountdown
-              ? const Color(0xFFFF1744)
-              : const Color(0xFFFF9100).withValues(alpha: 0.4),
-          width: isCountdown ? 2.0 : 1.0,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.health_and_safety,
-                      color: isCountdown
-                          ? const Color(0xFFFF1744)
-                          : const Color(0xFFFF9100),
-                      size: 18,
-                    ),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        "EMERGENCY FALL & SOS SENTINEL",
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1.1,
-                          color: isCountdown
-                              ? const Color(0xFFFF1744)
-                              : const Color(0xFFFF9100),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: isCountdown
-                      ? const Color(0xFFFF1744).withValues(alpha: 0.2)
-                      : Colors.white10,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  isCountdown
-                      ? "FALL DETECTED (${sos.countdownRemainingSeconds}s)"
-                      : "MONITORING",
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    color:
-                        isCountdown ? const Color(0xFFFF1744) : Colors.white60,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            sos.statusMessage,
-            style: TextStyle(
-              fontSize: 11,
-              color: isCountdown ? const Color(0xFFFF1744) : Colors.white70,
-              fontWeight: isCountdown ? FontWeight.bold : FontWeight.normal,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              if (isCountdown)
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () {
-                      _emergencySosService.cancelEmergency();
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF76FF03),
-                      foregroundColor: Colors.black,
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                    ),
-                    child: const Text("I AM OKAY (CANCEL SOS)", style: TextStyle(fontWeight: FontWeight.bold)),
-                  ),
-                )
-              else ...[
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      _emergencySosService.triggerManualSos();
-                    },
-                    icon: const Icon(Icons.emergency, size: 14),
-                    label: const Text("Test SOS Alert (30s)", style: TextStyle(fontSize: 10)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF1E293B),
-                      foregroundColor: const Color(0xFFFF1744),
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      setState(() {
-                        _wristHapticService.setChestLanyardMode(!isLanyard, currentPitchDeg: _pitchDeg);
-                      });
-                    },
-                    icon: Icon(isLanyard ? Icons.check_circle : Icons.accessibility_new, size: 14),
-                    label: Text(
-                      isLanyard ? "Chest Lanyard ON" : "Hands-Free Lanyard",
-                      style: const TextStyle(fontSize: 10),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF1E293B),
-                      foregroundColor: isLanyard ? const Color(0xFF76FF03) : Colors.white70,
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
 
   Widget _buildVoiceQACard() {
     return Container(
@@ -4186,25 +4911,7 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                 if (_isCameraInitialized && _cameraController != null)
                   CameraPreview(_cameraController!)
                 else
-                  Container(
-                    color: Colors.black,
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.radar,
-                              size: 44,
-                              color: Colors.white.withValues(alpha: 0.2)),
-                          const SizedBox(height: 8),
-                          const Text(
-                            "Starting Live Sonar Camera Stream...",
-                            style:
-                                TextStyle(fontSize: 12, color: Colors.white54),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                  _buildCameraInitializationLoader(),
 
                 // Sonar Radar Custom Painter (Concentric rings + Target blip)
                 CustomPaint(
@@ -4247,7 +4954,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                             const SizedBox(width: 5),
                             Text(
                               finder.isFound
-                                  ? "TARGET: ${_objectFinderService.activeTargetLabel.toUpperCase()} (${finder.distanceMeters.toStringAsFixed(1)}m)"
+                                  ? (finder.totalFoundCount > 1
+                                      ? "TARGET #1: ${_objectFinderService.activeTargetLabel.toUpperCase()} (${finder.distanceMeters.toStringAsFixed(1)}m) • ${finder.totalFoundCount} IN VIEW"
+                                      : "TARGET: ${_objectFinderService.activeTargetLabel.toUpperCase()} (${finder.distanceMeters.toStringAsFixed(1)}m)")
                                   : "SEARCHING: ${_objectFinderService.activeTargetLabel.toUpperCase()}",
                               style: TextStyle(
                                 fontSize: 10,
@@ -4457,6 +5166,19 @@ class _SonarRadarPainter extends CustomPainter {
         ..strokeWidth = 1.5
         ..style = PaintingStyle.stroke;
       canvas.drawLine(center, targetPos, linePaint);
+
+      // Draw secondary same-type targets on radar
+      final secPaint = Paint()
+        ..color = const Color(0xFF00E5FF).withValues(alpha: 0.8)
+        ..style = PaintingStyle.fill;
+      for (final sec in target.secondaryMatches) {
+        final secCenterX = (sec.xMin + sec.xMax) / 2.0;
+        final secPan = ((secCenterX - 0.5) * 2.0).clamp(-1.0, 1.0);
+        final secX = center.dx + (secPan * maxRadius * 0.75);
+        final secRatio = (sec.distanceMeters / 3.0).clamp(0.15, 0.95);
+        final secY = center.dy - (maxRadius * (1.0 - secRatio));
+        canvas.drawCircle(Offset(secX, secY), 5.0, secPaint);
+      }
     }
   }
 
