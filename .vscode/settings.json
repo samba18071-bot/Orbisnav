@@ -1,4 +1,5 @@
 {
+  "C_Cpp.intelliSenseEngine": "disabled",
   "C_Cpp.default.compileCommands": "${workspaceFolder}/compile_commands.json",
   "C_Cpp.default.includePath": [
     "${workspaceFolder}/core/include",

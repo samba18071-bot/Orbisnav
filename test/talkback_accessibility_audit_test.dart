@@ -1,9 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbisnav/main.dart';
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
+import 'helpers/mock_webview_platform.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUpAll(() {
+    WebViewPlatform.instance = MockWebViewPlatform();
+  });
 
   group('Day 19: TalkBack & VoiceOver Accessibility Semantic Audit', () {
     testWidgets('App renders with full high-contrast theme and accessible tabs', (WidgetTester tester) async {

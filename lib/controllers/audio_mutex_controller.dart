@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import '../services/google_maps_audio_bridge.dart';
 
 /// Audio Priority Matrix tiers according to OrbisNav Core System Laws
 enum AudioPriority {
@@ -229,6 +230,11 @@ class AudioMutexController {
   /// 
   /// The active tab/channel has primary priority over background/other channels.
   /// Non-critical speech from other channels is demoted and cannot interrupt the current tab.
+  ///
+  /// GOOGLE MAPS PRIORITY RULE:
+  /// When Google Maps navigation voice is active ([GoogleMapsAudioBridge.isMapsVoiceActive]),
+  /// ALL HUD TTS below Level 0 Critical is suppressed so Maps voice is never overlapped.
+  /// Level 0 Critical life-safety alerts still preempt Maps.
   Future<bool> speak({
     required String text,
     required AudioPriority priority,
@@ -238,6 +244,14 @@ class AudioMutexController {
   }) async {
     // If exclusive scene explanation mode is active, suppress all other speech so user exclusively hears the AI Scene Analyser!
     if (_isSceneExplanationExclusive) {
+      return false;
+    }
+
+    // GOOGLE MAPS AUDIO PRIORITY RULE:
+    // Suppress all non-critical HUD speech while Maps is giving turn-by-turn voice guidance.
+    // Level 0 Critical life-safety alerts always pass through regardless.
+    if (GoogleMapsAudioBridge().isMapsVoiceActive &&
+        priority != AudioPriority.level0Critical) {
       return false;
     }
 
@@ -406,6 +420,24 @@ class AudioMutexController {
     try {
       await _channel.invokeMethod('stop');
     } catch (_) {}
+  }
+
+  /// Immediately silences active non-critical HUD speech when Maps navigation speaks,
+  /// clearing pending low-priority queues until Maps voice finishes.
+  Future<void> muteHudForMapsVoice() async {
+    if (_currentActiveRequest != null &&
+        _currentActiveRequest!.priority != AudioPriority.level0Critical) {
+      if (!_currentActiveRequest!.completer.isCompleted) {
+        _currentActiveRequest!.completer.complete(false);
+      }
+      _currentActiveRequest = null;
+      _activeSpeechController.add(null);
+      try {
+        await _channel.invokeMethod('stop');
+      } catch (_) {}
+    }
+    // Prune non-critical items from queue so they don't play over Maps
+    _queue.removeWhere((item) => item.priority != AudioPriority.level0Critical);
   }
 
   /// Notifies the mutex that a hazard has cleared.

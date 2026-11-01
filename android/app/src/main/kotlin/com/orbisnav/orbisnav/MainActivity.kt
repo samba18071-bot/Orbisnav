@@ -61,9 +61,37 @@ class MainActivity : FlutterActivity(), TextToSpeech.OnInitListener {
     private val currentActivePriority = AtomicInteger(-1)
     private var audioFocusRequest: AudioFocusRequest? = null
     private var pendingSpeechResult: MethodChannel.Result? = null
+    private var initialMapsUrl: String? = null
+
+    private fun extractMapsUrl(intent: Intent?): String? {
+        if (intent == null) return null
+        if (Intent.ACTION_VIEW == intent.action) {
+            val data = intent.data
+            if (data != null) {
+                return data.toString()
+            }
+        } else if (Intent.ACTION_SEND == intent.action) {
+            val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+            if (!text.isNullOrBlank()) {
+                return text
+            }
+        }
+        return null
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val url = extractMapsUrl(intent)
+        if (url != null) {
+            methodChannel?.invokeMethod("onMapsUrlReceived", url)
+            methodChannelAlt?.invokeMethod("onMapsUrlReceived", url)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        initialMapsUrl = extractMapsUrl(intent)
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         initVibrator()
         initTts()
@@ -178,6 +206,11 @@ class MainActivity : FlutterActivity(), TextToSpeech.OnInitListener {
             }
             "startVoiceInput" -> {
                 startSpeechRecognition(result)
+            }
+            "getInitialMapsUrl" -> {
+                val url = initialMapsUrl
+                initialMapsUrl = null
+                result.success(url)
             }
             else -> {
                 result.notImplemented()

@@ -24,6 +24,8 @@ import 'services/smart_cane_ble_service.dart';
 import 'services/smart_glasses_bridge_service.dart';
 import 'controllers/eyes_free_gesture_controller.dart';
 import 'services/sensory_haptic_service.dart';
+import 'services/google_maps_audio_bridge.dart';
+import 'ui/views/google_maps_navigator_panel.dart';
 import 'services/barcode_product_service.dart';
 import 'services/currency_recognition_service.dart';
 import 'services/document_framing_guide_service.dart';
@@ -167,6 +169,14 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
 
   // Global Standards, Accessibility & Internationalization Engine
   final GlobalStandardsService _globalStandards = GlobalStandardsService();
+
+  // Google Maps Walking Navigation State for Safety HUD Overlay
+  StreamSubscription<bool>? _mapsNavStateSub;
+  StreamSubscription<String>? _mapsInstructionSub;
+  StreamSubscription<String>? _mapsAddressSub;
+  bool _isMapsNavigating = false;
+  String? _mapsInstruction;
+  String? _mapsAddress;
 
   // 10/10 Hardware Ecosystem: Smart White Cane BLE & Wearable Smart Glasses
   final SmartWhiteCaneBleService _smartCaneService = SmartWhiteCaneBleService();
@@ -361,6 +371,32 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
         });
       }
     });
+
+    // Listen to Google Maps audio bridge for HUD navigation marks & address
+    _mapsNavStateSub = GoogleMapsAudioBridge().navigationStateStream.listen((nav) {
+      if (mounted) {
+        setState(() {
+          _isMapsNavigating = nav;
+        });
+      }
+    });
+    _mapsInstructionSub = GoogleMapsAudioBridge().instructionStream.listen((inst) {
+      if (mounted) {
+        setState(() {
+          _mapsInstruction = inst;
+        });
+      }
+    });
+    _mapsAddressSub = GoogleMapsAudioBridge().addressStream.listen((addr) {
+      if (mounted) {
+        setState(() {
+          _mapsAddress = addr;
+        });
+      }
+    });
+    _isMapsNavigating = GoogleMapsAudioBridge().isNavigating;
+    _mapsInstruction = GoogleMapsAudioBridge().lastInstruction;
+    _mapsAddress = GoogleMapsAudioBridge().currentAddress;
 
     // 5. Initialize GPS & 4km Radius POI Discovery
     await _navService.initializeGpsAndNearby();
@@ -701,6 +737,9 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
     _voiceQuestionInputController.dispose();
     _voiceSonarItemController.dispose();
     _navService.stopNavigation();
+    _mapsNavStateSub?.cancel();
+    _mapsInstructionSub?.cancel();
+    _mapsAddressSub?.cancel();
     _cameraController?.dispose();
     _audioMutex.dispose();
     super.dispose();
@@ -1236,6 +1275,10 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
               const SizedBox(height: 12),
 
               if (_activeNavTab == 0) ...[
+                // ── Google Maps Navigator (URL paste + embedded WebView) ──
+                const GoogleMapsNavigatorPanel(),
+                const SizedBox(height: 12),
+
                 // Primary Focus: Live Camera Viewfinder right on top!
                 _buildPortraitCameraViewfinder(hasCriticalHazard),
                 const SizedBox(height: 12),
@@ -2051,6 +2094,98 @@ class _OrbisNavLiveAppState extends State<OrbisNavLiveApp>
                     ],
                   ),
                 ),
+
+                // Active Walking Navigation Marks Overlay (Google Maps turn directions & address)
+                if (_isMapsNavigating || _mapsInstruction != null || _mapsAddress != null)
+                  Positioned(
+                    top: _navService.targetBoard != null ? 104 : 46,
+                    left: 12,
+                    right: 12,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF001529).withValues(alpha: 0.90),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: const Color(0xFF76FF03),
+                          width: 1.8,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF76FF03).withValues(alpha: 0.3),
+                            blurRadius: 8,
+                            spreadRadius: 1,
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF76FF03).withValues(alpha: 0.2),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.navigation,
+                              color: Color(0xFF76FF03),
+                              size: 20,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Text(
+                                      "NAVIGATION MARK",
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.w900,
+                                        letterSpacing: 1.0,
+                                        color: Color(0xFF76FF03),
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    if (GoogleMapsAudioBridge().currentDestination != null)
+                                      Flexible(
+                                        child: Text(
+                                          "To: ${GoogleMapsAudioBridge().currentDestination}",
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontSize: 9,
+                                            color: Colors.white70,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _mapsInstruction ??
+                                      (_isMapsNavigating
+                                          ? "Following walking route towards destination"
+                                          : (_mapsAddress != null
+                                              ? "At: $_mapsAddress"
+                                              : "Ready for navigation")),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
 
                 // Dynamic Live Bounding Boxes with Multi-Item Disambiguation & Motion Indicators
                 ...MultiItemDisambiguator.disambiguateObstacles(_activeObstacles).map((item) {
