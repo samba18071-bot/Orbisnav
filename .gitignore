@@ -56,6 +56,8 @@ __pycache__/
 *.png
 *.jpg
 *.jpeg
+!android/app/src/main/res/**/ic_launcher.png
+!assets/icon/*
 
 # Symbolication related
 app.*.symbols

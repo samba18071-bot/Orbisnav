@@ -250,8 +250,10 @@ class AudioMutexController {
     // GOOGLE MAPS AUDIO PRIORITY RULE:
     // Suppress all non-critical HUD speech while Maps is giving turn-by-turn voice guidance.
     // Level 0 Critical life-safety alerts always pass through regardless.
+    // Navigation turn announcements from Maps itself bypass this check.
     if (GoogleMapsAudioBridge().isMapsVoiceActive &&
-        priority != AudioPriority.level0Critical) {
+        priority != AudioPriority.level0Critical &&
+        channelIndex != null) {
       return false;
     }
 
